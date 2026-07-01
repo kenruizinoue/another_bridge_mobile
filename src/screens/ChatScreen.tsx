@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -11,8 +12,9 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { fetchMessages, resumeSessionStream } from '../api/sessions';
+import { enqueueResume, fetchMessages, resumeSessionStream, resumeStatus } from '../api/sessions';
 import type { SessionCard, ToolRef, Turn } from '../api/types';
+import GlassIconButton from '../components/GlassIconButton';
 import ToolLines from '../components/ToolLines';
 import TurnRow from '../components/TurnRow';
 import { colors, font, mono, space } from '../theme';
@@ -40,6 +42,16 @@ export default function ChatScreen({
   const [sendError, setSendError] = useState<string | null>(null);
   const [streamText, setStreamText] = useState('');
   const [streamTools, setStreamTools] = useState<ToolRef[]>([]);
+  const [syncing, setSyncing] = useState(false);
+  const [queued, setQueued] = useState<string[]>([]);
+
+  // Catch-up state. `inFlight` = a turn we sent is still expected to be
+  // running on the Mac (kept in a ref so listeners see the latest without
+  // re-subscribing). Backoff mirrors the web client: fast, then ease off.
+  const inFlight = useRef(false);
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollIter = useRef(0);
+  const CATCH_UP_INTERVALS_MS = [3000, 5000, 10000, 30000];
 
   // Re-fetch the latest page. `initial` shows the full-screen spinner and
   // surfaces load errors; `refresh` (the top-bar button) keeps the current
@@ -82,19 +94,108 @@ export default function ChatScreen({
     }
   }, [hasMore, loadingMore, nextBefore, session.session_id]);
 
-  // Continue the session. Optimistically show the user's turn at the
-  // bottom, wait for Claude's reply to be appended on the Mac, then
-  // re-fetch the canonical turns (which replace the optimistic one and
-  // bring in the reply + any tool steps). On failure, roll back and
-  // restore the draft so nothing is lost.
+  const stopPolling = useCallback(() => {
+    if (pollTimer.current) {
+      clearTimeout(pollTimer.current);
+      pollTimer.current = null;
+    }
+  }, []);
+
+  // Catch-up: the Mac's transcript is the source of truth, so instead of
+  // fighting to keep a socket open we re-sync from it. Each pass reads the
+  // "is a resume still running?" signal + the latest turns. While running,
+  // it re-polls with backoff; once the run finishes, the last pass shows
+  // the final reply and we stop. Never re-sends — pure read, so it's safe
+  // to fire on reconnect / foreground without duplicating the turn.
+  const catchUp = useCallback(
+    async (fromPoll = false) => {
+      if (!fromPoll) pollIter.current = 0;
+      let status;
+      try {
+        status = await resumeStatus(session.session_id);
+        const page = await fetchMessages(session.session_id);
+        setTurns(page.messages);
+        setNextBefore(page.next_before);
+        setHasMore(page.has_more);
+        setQueued(status.queued);
+        setSendError(null);
+      } catch {
+        // Transient (still offline). Don't reschedule into a tight failure
+        // loop — the next foreground / online / manual ⟳ will retry.
+        return;
+      }
+
+      // Busy while a turn is generating OR messages are still queued.
+      if (status.running || status.queue_count > 0) {
+        setSyncing(true);
+        const idx = Math.min(pollIter.current, CATCH_UP_INTERVALS_MS.length - 1);
+        pollIter.current += 1;
+        stopPolling();
+        pollTimer.current = setTimeout(() => {
+          void catchUp(true);
+        }, CATCH_UP_INTERVALS_MS[idx]);
+      } else {
+        // Nothing running and nothing queued — the conversation has fully
+        // advanced; the latest fetch already has every reply.
+        inFlight.current = false;
+        setSyncing(false);
+        setSending(false);
+        setStreamText('');
+        setStreamTools([]);
+        setQueued([]);
+        stopPolling();
+      }
+    },
+    [session.session_id, stopPolling],
+  );
+
+  // Reconnect on return-to-foreground (RN's analogue of visibilitychange):
+  // if a turn was in flight when we were backgrounded (iOS suspends the
+  // stream), catch up from the transcript.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && inFlight.current) void catchUp();
+    });
+    return () => sub.remove();
+  }, [catchUp]);
+
+  useEffect(() => stopPolling, [stopPolling]);
+
+  // Send a message. If nothing is in flight, stream it live. If a turn is
+  // already running or messages are queued, QUEUE this one server-side —
+  // the bridge keeps advancing the conversation even if the phone locks,
+  // and catch-up pulls it all when we return.
   const send = useCallback(async () => {
     const message = draft.trim();
-    if (!message || sending) return;
+    if (!message) return;
     setDraft('');
     setSendError(null);
+
+    const busy = sending || syncing || queued.length > 0;
+    if (busy) {
+      setQueued((q) => [...q, message]); // optimistic; status polls reconcile
+      inFlight.current = true;
+      try {
+        await enqueueResume(session.session_id, message);
+      } catch (e) {
+        setQueued((q) => {
+          const i = q.lastIndexOf(message);
+          return i === -1 ? q : [...q.slice(0, i), ...q.slice(i + 1)];
+        });
+        setDraft(message);
+        setSendError(e instanceof Error ? e.message : String(e));
+        return;
+      }
+      setSyncing(true);
+      void catchUp(); // reflect the queue + drive it to completion
+      return;
+    }
+
+    // Nothing in flight → stream it live.
     setSending(true);
     setStreamText('');
     setStreamTools([]);
+    inFlight.current = true;
 
     const optimistic: Turn = {
       index: -1,
@@ -108,6 +209,7 @@ export default function ChatScreen({
     setTurns((prev) => [optimistic, ...prev]); // newest-first: index 0 = bottom
 
     const rollback = () => {
+      inFlight.current = false;
       setTurns((prev) => prev.filter((t) => t.index !== -1));
       setDraft(message);
       setSending(false);
@@ -119,23 +221,57 @@ export default function ChatScreen({
       onText: (chunk) => setStreamText((t) => t + chunk),
       onTool: (tool) => setStreamTools((ts) => [...ts, tool]),
       onError: (msg) => {
+        // Failed before producing a turn (couldn't reach bridge / 409 /
+        // bad key) — roll back so the message isn't lost.
         rollback();
         setSendError(msg);
       },
       onDone: async () => {
-        // Canonical turns (proper text/tool split, markdown) replace the
-        // optimistic user turn and the live streaming turn.
-        await applyLatest('refresh');
+        // The `done` event fired — this streamed turn finished. Hand to
+        // catch-up: it refreshes to canonical turns and, if a queued
+        // message is still draining, keeps syncing until the queue empties.
         setSending(false);
         setStreamText('');
         setStreamTools([]);
+        await catchUp();
+      },
+      onInterrupted: () => {
+        // Connection dropped before `done`, but the turn IS running on the
+        // Mac. Don't roll back and don't error — hand off to catch-up,
+        // which polls the transcript until the reply lands.
+        setStreamText('');
+        setStreamTools([]);
+        setSending(false);
+        void catchUp();
       },
     });
-  }, [draft, sending, session.session_id, applyLatest]);
+  }, [draft, sending, syncing, queued.length, session.session_id, catchUp]);
 
+  // On open (mount — includes a fresh app launch or coming back to the
+  // card after leaving), load the conversation AND ask the server whether
+  // a resume is still running for this session. Because that state lives
+  // on the bridge (not in this component), it's correct even if the app
+  // was killed mid-turn: if running, show the indicator and catch up.
   useEffect(() => {
-    applyLatest('initial');
-  }, [applyLatest]);
+    let cancelled = false;
+    (async () => {
+      await applyLatest('initial');
+      if (cancelled) return;
+      try {
+        const status = await resumeStatus(session.session_id);
+        if (!cancelled && (status.running || status.queue_count > 0)) {
+          inFlight.current = true;
+          setQueued(status.queued);
+          void catchUp();
+        }
+      } catch {
+        // offline / status unavailable — ⟳ or foreground will retry
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyLatest, catchUp, session.session_id]);
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -146,18 +282,13 @@ export default function ChatScreen({
         <Text style={styles.headerTitle} numberOfLines={1}>
           {session.title}
         </Text>
-        <Pressable
+        <GlassIconButton
+          glyph="↻"
           onPress={() => applyLatest('refresh')}
-          disabled={refreshing || loading}
-          hitSlop={12}
-          style={styles.refreshBtn}
-        >
-          {refreshing ? (
-            <ActivityIndicator size="small" color={colors.accent} />
-          ) : (
-            <Text style={styles.refreshIcon}>⟳</Text>
-          )}
-        </Pressable>
+          disabled={loading}
+          busy={refreshing}
+          size={40}
+        />
       </View>
       <Text style={styles.subheader} numberOfLines={1} ellipsizeMode="head">
         {session.project} · {session.message_count} msgs
@@ -199,10 +330,30 @@ export default function ChatScreen({
       )}
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        {sending && !streamText ? (
+        {queued.length > 0 ? (
+          <View style={styles.queueList}>
+            {queued.map((m, i) => (
+              <Text key={i} style={styles.queueItem} numberOfLines={1}>
+                ⋯ {m}
+              </Text>
+            ))}
+          </View>
+        ) : null}
+
+        {sending || syncing ? (
+          // Persists until the run truly finishes (the `done` event, or
+          // catch-up seeing running=false AND the queue empty).
           <View style={styles.workingBar}>
             <ActivityIndicator size="small" color={colors.accent} />
-            <Text style={styles.workingText}>claude is working on the Mac…</Text>
+            <Text style={styles.workingText}>
+              {syncing
+                ? queued.length > 0
+                  ? `syncing — ${queued.length} queued…`
+                  : 'reconnecting — syncing from the Mac…'
+                : streamText
+                  ? 'streaming…'
+                  : 'claude is working on the Mac…'}
+            </Text>
           </View>
         ) : sendError ? (
           <View style={styles.workingBar}>
@@ -218,19 +369,22 @@ export default function ChatScreen({
             style={styles.input}
             value={draft}
             onChangeText={setDraft}
-            placeholder="Message… (continues this session)"
+            // Always editable — typing while a turn runs QUEUES the message.
+            placeholder={
+              sending || syncing || queued.length > 0
+                ? 'Queue a message…'
+                : 'Message… (continues this session)'
+            }
             placeholderTextColor="#4a5666"
             multiline
-            editable={!sending}
           />
-          <Pressable
+          <GlassIconButton
+            glyph="↑"
             onPress={send}
-            disabled={sending || !draft.trim()}
-            hitSlop={8}
-            style={[styles.sendBtn, (sending || !draft.trim()) && styles.sendBtnDisabled]}
-          >
-            <Text style={styles.sendText}>send</Text>
-          </Pressable>
+            disabled={!draft.trim()}
+            filled={!!draft.trim()}
+            size={40}
+          />
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -323,4 +477,13 @@ const styles = StyleSheet.create({
   },
   workingText: { color: colors.textDim, fontSize: font.small, fontFamily: mono },
   sendErrorText: { color: colors.error, fontSize: font.small, fontFamily: mono, flex: 1 },
+  queueList: {
+    paddingHorizontal: space.md,
+    paddingTop: space.sm,
+    gap: 2,
+    backgroundColor: colors.inputBg,
+    borderTopWidth: 1,
+    borderTopColor: colors.divider,
+  },
+  queueItem: { color: colors.textFaint, fontSize: font.small, fontFamily: mono },
 });

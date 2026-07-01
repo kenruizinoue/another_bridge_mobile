@@ -5,6 +5,29 @@ import type { MessagesPage, SessionCard, ToolRef } from './types';
 
 export type ResumeResult = { ok: boolean; session_id: string; reply: string };
 
+export type ResumeStatus = {
+  running: boolean;
+  started_at: number | null;
+  queued: string[]; // messages waiting to run, in order
+  queue_count: number;
+};
+
+// The catch-up signal: is a resume running or are messages queued on the
+// Mac? Survives a dropped stream / killed app, so a reconnecting client
+// polls this until BOTH running and queued are empty.
+export async function resumeStatus(sessionId: string): Promise<ResumeStatus> {
+  return apiGet<ResumeStatus>(`/sessions/${sessionId}/resume/status`);
+}
+
+// Queue a message server-side. The bridge runs it (and other queued
+// messages, in order) even if the phone locks or the app is killed.
+export async function enqueueResume(
+  sessionId: string,
+  message: string,
+): Promise<{ ok: boolean; session_id: string; queued: number }> {
+  return apiPost(`/sessions/${sessionId}/resume/queue`, { message });
+}
+
 // Continue a session: appends the message (+ Claude's reply) to the
 // transcript on the Mac via `claude --resume`. Resolves when the turn
 // finishes; the caller then re-fetches messages for the canonical turns.
@@ -15,8 +38,10 @@ export async function resumeSession(sessionId: string, message: string): Promise
 export type StreamHandlers = {
   onText: (chunk: string) => void; // a token / text chunk
   onTool: (tool: ToolRef) => void; // a tool step surfaced
-  onDone: () => void; // stream completed cleanly
-  onError: (message: string) => void; // transport or bridge error
+  onDone: () => void; // the `done` event — response truly finished
+  onError: (message: string) => void; // couldn't start / bridge error
+  onInterrupted: () => void; // connection dropped mid-stream; the message
+  // was sent and Claude may still be finishing on the Mac
 };
 
 // Streaming resume: reads the SSE the bridge emits and dispatches each
@@ -28,6 +53,7 @@ export function resumeSessionStream(
   h: StreamHandlers,
 ): () => void {
   let errored = false;
+  let gotDone = false;
   return streamSSE(
     `/sessions/${sessionId}/resume/stream`,
     { message },
@@ -35,16 +61,18 @@ export function resumeSessionStream(
       if (ev === 'text') h.onText(payload.chunk ?? '');
       else if (ev === 'tool')
         h.onTool({ name: payload.name ?? '', label: payload.label ?? '', stat: payload.stat ?? null });
-      else if (ev === 'error') {
+      else if (ev === 'done') {
+        gotDone = true;
+        h.onDone(); // the ONLY reliable "finished" signal
+      } else if (ev === 'error') {
         errored = true;
         h.onError(payload.message ?? 'stream error');
       }
-      // 'done' is covered by onEnd below
     },
     (err) => {
-      if (errored) return;
-      if (err) h.onError(err);
-      else h.onDone();
+      if (gotDone || errored) return; // completion/error already delivered
+      if (err) h.onError(err); // never reached the bridge / HTTP error
+      else h.onInterrupted(); // closed WITHOUT a done event → dropped mid-flight
     },
   );
 }
