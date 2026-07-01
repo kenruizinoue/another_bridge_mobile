@@ -11,8 +11,9 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { fetchMessages } from '../api/sessions';
-import type { SessionCard, Turn } from '../api/types';
+import { fetchMessages, resumeSessionStream } from '../api/sessions';
+import type { SessionCard, ToolRef, Turn } from '../api/types';
+import ToolLines from '../components/ToolLines';
 import TurnRow from '../components/TurnRow';
 import { colors, font, mono, space } from '../theme';
 
@@ -35,6 +36,10 @@ export default function ChatScreen({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [streamText, setStreamText] = useState('');
+  const [streamTools, setStreamTools] = useState<ToolRef[]>([]);
 
   // Re-fetch the latest page. `initial` shows the full-screen spinner and
   // surfaces load errors; `refresh` (the top-bar button) keeps the current
@@ -76,6 +81,57 @@ export default function ChatScreen({
       setLoadingMore(false);
     }
   }, [hasMore, loadingMore, nextBefore, session.session_id]);
+
+  // Continue the session. Optimistically show the user's turn at the
+  // bottom, wait for Claude's reply to be appended on the Mac, then
+  // re-fetch the canonical turns (which replace the optimistic one and
+  // bring in the reply + any tool steps). On failure, roll back and
+  // restore the draft so nothing is lost.
+  const send = useCallback(async () => {
+    const message = draft.trim();
+    if (!message || sending) return;
+    setDraft('');
+    setSendError(null);
+    setSending(true);
+    setStreamText('');
+    setStreamTools([]);
+
+    const optimistic: Turn = {
+      index: -1,
+      uuid: 'optimistic',
+      role: 'user',
+      text: message,
+      tool_calls: 0,
+      tools: [],
+      timestamp: null,
+    };
+    setTurns((prev) => [optimistic, ...prev]); // newest-first: index 0 = bottom
+
+    const rollback = () => {
+      setTurns((prev) => prev.filter((t) => t.index !== -1));
+      setDraft(message);
+      setSending(false);
+      setStreamText('');
+      setStreamTools([]);
+    };
+
+    resumeSessionStream(session.session_id, message, {
+      onText: (chunk) => setStreamText((t) => t + chunk),
+      onTool: (tool) => setStreamTools((ts) => [...ts, tool]),
+      onError: (msg) => {
+        rollback();
+        setSendError(msg);
+      },
+      onDone: async () => {
+        // Canonical turns (proper text/tool split, markdown) replace the
+        // optimistic user turn and the live streaming turn.
+        await applyLatest('refresh');
+        setSending(false);
+        setStreamText('');
+        setStreamTools([]);
+      },
+    });
+  }, [draft, sending, session.session_id, applyLatest]);
 
   useEffect(() => {
     applyLatest('initial');
@@ -124,6 +180,12 @@ export default function ChatScreen({
           keyExtractor={(t) => String(t.index)}
           renderItem={({ item }) => <TurnRow turn={item} />}
           contentContainerStyle={styles.listContent}
+          // Inverted list → the header renders at the visual BOTTOM, below
+          // the just-sent user turn, which is exactly where the live reply
+          // should stream in.
+          ListHeaderComponent={
+            sending ? <StreamingTurn text={streamText} tools={streamTools} /> : null
+          }
           onEndReached={loadOlder}
           onEndReachedThreshold={0.4}
           ListFooterComponent={
@@ -137,24 +199,70 @@ export default function ChatScreen({
       )}
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        {sending && !streamText ? (
+          <View style={styles.workingBar}>
+            <ActivityIndicator size="small" color={colors.accent} />
+            <Text style={styles.workingText}>claude is working on the Mac…</Text>
+          </View>
+        ) : sendError ? (
+          <View style={styles.workingBar}>
+            <Text style={styles.sendErrorText} numberOfLines={2}>
+              ✕ {sendError}
+            </Text>
+          </View>
+        ) : null}
+
         <View style={styles.inputRow}>
           <Text style={styles.prompt}>❯</Text>
           <TextInput
             style={styles.input}
             value={draft}
             onChangeText={setDraft}
-            placeholder="resume not wired yet"
+            placeholder="Message… (continues this session)"
             placeholderTextColor="#4a5666"
             multiline
-            editable={false}
+            editable={!sending}
           />
+          <Pressable
+            onPress={send}
+            disabled={sending || !draft.trim()}
+            hitSlop={8}
+            style={[styles.sendBtn, (sending || !draft.trim()) && styles.sendBtnDisabled]}
+          >
+            <Text style={styles.sendText}>send</Text>
+          </Pressable>
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
+// The live reply as it streams in. Rendered as plain monospace (not
+// markdown) with a blinking-ish cursor while tokens arrive; once `done`
+// fires, applyLatest() replaces it with the canonical, markdown-rendered
+// turn. Tool steps appear as they're surfaced.
+function StreamingTurn({ text, tools }: { text: string; tools: ToolRef[] }) {
+  return (
+    <View style={styles.streamTurn}>
+      <Text style={[styles.streamRole]}>● claude</Text>
+      <Text style={styles.streamBody} selectable>
+        {text}
+        <Text style={styles.cursor}>▋</Text>
+      </Text>
+      {tools.length ? (
+        <View style={{ marginTop: space.sm }}>
+          <ToolLines tools={tools} />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  streamTurn: { marginBottom: space.lg + 2 },
+  streamRole: { color: colors.accent, fontSize: font.small, fontFamily: mono, marginBottom: space.xs },
+  streamBody: { color: colors.textBody, fontSize: font.body, lineHeight: 20, fontFamily: mono },
+  cursor: { color: colors.accent },
   screen: { flex: 1, backgroundColor: colors.bg },
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: space.md, paddingTop: space.xs },
   backBtn: { paddingVertical: 6, paddingRight: 10 },
@@ -194,4 +302,25 @@ const styles = StyleSheet.create({
   },
   prompt: { color: colors.user, fontSize: font.title, fontFamily: mono, marginRight: space.sm, marginTop: 2 },
   input: { flex: 1, color: colors.textBody, fontSize: font.title, fontFamily: mono, maxHeight: 100, padding: 0 },
+  sendBtn: {
+    marginLeft: space.sm,
+    paddingHorizontal: space.md,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: colors.accent,
+  },
+  sendBtnDisabled: { backgroundColor: colors.border },
+  sendText: { color: '#06121d', fontSize: font.small, fontWeight: '700', fontFamily: mono },
+  workingBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    backgroundColor: colors.inputBg,
+    borderTopWidth: 1,
+    borderTopColor: colors.divider,
+  },
+  workingText: { color: colors.textDim, fontSize: font.small, fontFamily: mono },
+  sendErrorText: { color: colors.error, fontSize: font.small, fontFamily: mono, flex: 1 },
 });
