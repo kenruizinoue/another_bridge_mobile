@@ -3,7 +3,8 @@
 import { apiGet, apiPost, streamSSE } from './client';
 import type { MessagesPage, SessionCard, ToolRef } from './types';
 
-export type ResumeResult = { ok: boolean; session_id: string; reply: string };
+// A base64 image to attach (raw base64, no data: prefix).
+export type OutgoingImage = { media_type: string; data: string };
 
 export type ResumeStatus = {
   running: boolean;
@@ -24,15 +25,9 @@ export async function resumeStatus(sessionId: string): Promise<ResumeStatus> {
 export async function enqueueResume(
   sessionId: string,
   message: string,
+  images: OutgoingImage[] = [],
 ): Promise<{ ok: boolean; session_id: string; queued: number }> {
-  return apiPost(`/sessions/${sessionId}/resume/queue`, { message });
-}
-
-// Continue a session: appends the message (+ Claude's reply) to the
-// transcript on the Mac via `claude --resume`. Resolves when the turn
-// finishes; the caller then re-fetches messages for the canonical turns.
-export async function resumeSession(sessionId: string, message: string): Promise<ResumeResult> {
-  return apiPost<ResumeResult>(`/sessions/${sessionId}/resume`, { message });
+  return apiPost(`/sessions/${sessionId}/resume/queue`, { message, images });
 }
 
 export type StreamHandlers = {
@@ -51,12 +46,13 @@ export function resumeSessionStream(
   sessionId: string,
   message: string,
   h: StreamHandlers,
+  images: OutgoingImage[] = [],
 ): () => void {
   let errored = false;
   let gotDone = false;
   return streamSSE(
     `/sessions/${sessionId}/resume/stream`,
-    { message },
+    { message, images },
     (ev, payload) => {
       if (ev === 'text') h.onText(payload.chunk ?? '');
       else if (ev === 'tool')

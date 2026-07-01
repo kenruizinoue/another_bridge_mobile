@@ -3,11 +3,11 @@ import {
   ActivityIndicator,
   FlatList,
   RefreshControl,
-  SafeAreaView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { fetchSessions } from '../api/sessions';
 import type { SessionCard as Card } from '../api/types';
 import SessionCard from '../components/SessionCard';
@@ -56,6 +56,7 @@ export default function SessionListScreen({ onOpen }: { onOpen: (card: Card) => 
         </View>
       ) : (
         <FlatList
+          testID="session-list"
           data={sessions}
           keyExtractor={(item) => item.session_id}
           renderItem={({ item }) => <SessionCard card={item} onPress={onOpen} />}

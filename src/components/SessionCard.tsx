@@ -13,6 +13,7 @@ export default function SessionCard({
 }) {
   return (
     <Pressable
+      testID={`session-card-${card.session_id}`}
       onPress={() => onPress?.(card)}
       style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
     >

@@ -1,26 +1,33 @@
-import { ActivityIndicator, Pressable, StyleSheet, Text } from 'react-native';
-import { colors, mono } from '../theme';
+import { Ionicons } from '@expo/vector-icons';
+import { ActivityIndicator, Pressable, StyleSheet } from 'react-native';
+import { colors } from '../theme';
 
-// A circular, translucent "glass" icon button. Used for the header
-// refresh and the composer send. `filled` gives the accent-tinted active
-// look (send when there's text); `busy` swaps the glyph for a spinner.
+type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
+
+// A circular, translucent "glass" icon button using real Ionicons. Used
+// for the header refresh, the composer attach, and send. `filled` gives
+// the accent-tinted active look; `busy` swaps the icon for a spinner.
 export default function GlassIconButton({
-  glyph,
+  name,
   onPress,
   disabled = false,
   busy = false,
   filled = false,
   size = 40,
+  testID,
 }: {
-  glyph: string;
+  name: IoniconName;
   onPress?: () => void;
   disabled?: boolean;
   busy?: boolean;
   filled?: boolean;
   size?: number;
+  testID?: string;
 }) {
+  const iconColor = filled ? '#06121d' : disabled ? colors.textDim : colors.accent;
   return (
     <Pressable
+      testID={testID}
       onPress={onPress}
       disabled={disabled || busy}
       hitSlop={8}
@@ -35,40 +42,19 @@ export default function GlassIconButton({
       {busy ? (
         <ActivityIndicator size="small" color={filled ? '#06121d' : colors.accent} />
       ) : (
-        <Text
-          style={[
-            styles.glyph,
-            { fontSize: size * 0.5 },
-            filled ? styles.glyphFilled : styles.glyphGlass,
-          ]}
-        >
-          {glyph}
-        </Text>
+        <Ionicons name={name} size={Math.round(size * 0.52)} color={iconColor} />
       )}
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  base: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-  },
+  base: { alignItems: 'center', justifyContent: 'center', borderWidth: 1 },
   glass: {
     backgroundColor: 'rgba(94,177,255,0.12)', // accent @ low alpha → glassy
     borderColor: 'rgba(94,177,255,0.35)',
   },
-  filled: {
-    backgroundColor: colors.accent,
-    borderColor: colors.accent,
-  },
-  disabled: {
-    backgroundColor: 'rgba(125,138,153,0.10)',
-    borderColor: 'rgba(125,138,153,0.25)',
-  },
+  filled: { backgroundColor: colors.accent, borderColor: colors.accent },
+  disabled: { backgroundColor: 'rgba(125,138,153,0.10)', borderColor: 'rgba(125,138,153,0.25)' },
   pressed: { opacity: 0.6 },
-  glyph: { fontFamily: mono, fontWeight: '700', includeFontPadding: false, lineHeight: undefined },
-  glyphGlass: { color: colors.accent },
-  glyphFilled: { color: '#06121d' },
 });
