@@ -118,6 +118,113 @@ it('remove, clear, and restore manage the set', async () => {
   expect(result.current.attachments).toEqual([]);
 
   // a failed send hands the images back
-  await act(async () => result.current.restore(saved));
+  await act(async () => result.current.restore(saved, []));
   expect(result.current.attachments).toEqual(saved);
+});
+
+// ── File attachments (the file-drop side) ─────────────────────────────
+
+jest.mock('expo-document-picker', () => ({ getDocumentAsync: jest.fn() }));
+jest.mock('expo-file-system', () => ({
+  File: class {
+    uri: string;
+    constructor(uri: string) {
+      this.uri = uri;
+    }
+    base64() {
+      if (this.uri === 'unreadable.pdf') return Promise.reject(new Error('io'));
+      return Promise.resolve(`b64-of-${this.uri}`);
+    }
+  },
+}));
+
+const docMock = require('expo-document-picker').getDocumentAsync as jest.Mock;
+
+describe('file picking', () => {
+  it('reads picked files as base64 with name and size', async () => {
+    docMock.mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: 'report.pdf', name: 'report.pdf', size: 1234 }],
+    });
+    const { result } = await renderHook(() => useAttachments(jest.fn()));
+    await act(async () => result.current.pickFiles());
+
+    expect(result.current.files).toEqual([
+      { uri: 'report.pdf', name: 'report.pdf', size: 1234, base64: 'b64-of-report.pdf' },
+    ]);
+  });
+
+  it('rejects disallowed extensions with a friendly error', async () => {
+    const onError = jest.fn();
+    docMock.mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: 'clip.mp4', name: 'clip.mp4', size: 10 }],
+    });
+    const { result } = await renderHook(() => useAttachments(onError));
+    await act(async () => result.current.pickFiles());
+
+    expect(onError).toHaveBeenCalledWith(expect.stringMatching(/aren't supported/));
+    expect(result.current.files).toEqual([]);
+  });
+
+  it('rejects oversize files but keeps valid ones from the same pick', async () => {
+    const onError = jest.fn();
+    docMock.mockResolvedValue({
+      canceled: false,
+      assets: [
+        { uri: 'huge.csv', name: 'huge.csv', size: 21 * 1024 * 1024 },
+        { uri: 'ok.csv', name: 'ok.csv', size: 100 },
+      ],
+    });
+    const { result } = await renderHook(() => useAttachments(onError));
+    await act(async () => result.current.pickFiles());
+
+    expect(onError).toHaveBeenCalledWith(expect.stringMatching(/too big/));
+    expect(result.current.files.map((f) => f.name)).toEqual(['ok.csv']);
+  });
+
+  it('reports unreadable files instead of crashing', async () => {
+    const onError = jest.fn();
+    docMock.mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: 'unreadable.pdf', name: 'unreadable.pdf', size: 10 }],
+    });
+    const { result } = await renderHook(() => useAttachments(onError));
+    await act(async () => result.current.pickFiles());
+
+    expect(onError).toHaveBeenCalledWith(expect.stringMatching(/Couldn't read/));
+    expect(result.current.files).toEqual([]);
+  });
+
+  it('caps files at MAX_FILES and no-ops at the cap', async () => {
+    docMock.mockResolvedValue({
+      canceled: false,
+      assets: Array.from({ length: 7 }, (_, i) => ({ uri: `f${i}.txt`, name: `f${i}.txt`, size: 1 })),
+    });
+    const { result } = await renderHook(() => useAttachments(jest.fn()));
+    await act(async () => result.current.pickFiles());
+    expect(result.current.files).toHaveLength(5);
+
+    docMock.mockClear();
+    await act(async () => result.current.pickFiles());
+    expect(docMock).not.toHaveBeenCalled();
+  });
+
+  it('removeFile and clear cover the file set too', async () => {
+    docMock.mockResolvedValue({
+      canceled: false,
+      assets: [
+        { uri: 'a.txt', name: 'a.txt', size: 1 },
+        { uri: 'b.txt', name: 'b.txt', size: 1 },
+      ],
+    });
+    const { result } = await renderHook(() => useAttachments(jest.fn()));
+    await act(async () => result.current.pickFiles());
+
+    await act(async () => result.current.removeFile('a.txt'));
+    expect(result.current.files.map((f) => f.name)).toEqual(['b.txt']);
+
+    await act(async () => result.current.clear());
+    expect(result.current.files).toEqual([]);
+  });
 });

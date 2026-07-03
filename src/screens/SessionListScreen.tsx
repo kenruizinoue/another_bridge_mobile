@@ -8,10 +8,11 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import Constants from 'expo-constants';
 import { fetchSessions } from '../api/sessions';
 import type { SessionCard as Card } from '../api/types';
 import SessionCard from '../components/SessionCard';
-import { colors, font, space } from '../theme';
+import { colors, font, mono, space } from '../theme';
 
 // The card list. Tapping a card calls onOpen(card).
 export default function SessionListScreen({ onOpen }: { onOpen: (card: Card) => void }) {
@@ -41,6 +42,8 @@ export default function SessionListScreen({ onOpen }: { onOpen: (card: Card) => 
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Conversations</Text>
         {!loading && !error ? <Text style={styles.headerCount}>{sessions.length}</Text> : null}
+        <View style={styles.headerSpacer} />
+        <Text style={styles.version}>v{Constants.expoConfig?.version ?? '?'}</Text>
       </View>
 
       {loading ? (
@@ -86,6 +89,8 @@ const styles = StyleSheet.create({
   },
   headerTitle: { color: colors.textPrimary, fontSize: 26, fontWeight: '700' },
   headerCount: { color: colors.accent, fontSize: font.title, fontWeight: '600', marginLeft: 10 },
+  headerSpacer: { flex: 1 },
+  version: { color: colors.textFaint, fontSize: font.tiny, fontFamily: mono },
   listContent: { paddingVertical: 6, paddingBottom: 24 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: space.sm },
   dim: { color: colors.textDim, fontSize: font.meta, textAlign: 'center' },

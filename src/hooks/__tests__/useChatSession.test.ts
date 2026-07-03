@@ -79,7 +79,7 @@ it('streams a live send: optimistic turn, chunks, done → canonical refresh', a
 
   const restore = jest.fn();
   await act(async () => {
-    await result.current.send('do the thing', [], restore);
+    await result.current.send('do the thing', [], [], restore);
   });
 
   // optimistic user turn at the bottom (index 0 of the inverted list)
@@ -119,7 +119,7 @@ it('rolls back and surfaces the error when the stream fails to start', async () 
 
   const restore = jest.fn();
   await act(async () => {
-    await result.current.send('lost message?', [], restore);
+    await result.current.send('lost message?', [], [], restore);
   });
   await act(async () => handlers.onError('401 Unauthorized — key mismatch.'));
 
@@ -137,7 +137,7 @@ it('queues server-side when a turn is already running', async () => {
   // first send → live stream, hook is now busy
   streamMock.mockReturnValue(() => {});
   await act(async () => {
-    await result.current.send('first', [], jest.fn());
+    await result.current.send('first', [], [], jest.fn());
   });
   expect(result.current.sending).toBe(true);
 
@@ -145,10 +145,10 @@ it('queues server-side when a turn is already running', async () => {
   enqueueResumeMock.mockResolvedValue({ ok: true, session_id: 'sid', queued: 1 });
   resumeStatusMock.mockResolvedValue({ ...idleStatus, running: true, queued: ['second'], queue_count: 1 });
   await act(async () => {
-    await result.current.send('second', [], jest.fn());
+    await result.current.send('second', [], [], jest.fn());
   });
 
-  expect(enqueueResumeMock).toHaveBeenCalledWith('sid', 'second', []);
+  expect(enqueueResumeMock).toHaveBeenCalledWith('sid', 'second', [], []);
   expect(streamMock).toHaveBeenCalledTimes(1); // no second live stream
   await waitFor(() => expect(result.current.queued).toContain('second'));
   expect(result.current.syncing).toBe(true);
@@ -163,12 +163,12 @@ it('passes images through to the stream and previews image-only sends', async ()
 
   const images = [{ media_type: 'image/jpeg', data: 'b64data' }];
   await act(async () => {
-    await result.current.send('', images, jest.fn());
+    await result.current.send('', images, [], jest.fn());
   });
 
   // images reach the wire call, and the optimistic turn shows a preview
-  expect(streamMock).toHaveBeenCalledWith('sid', '', expect.anything(), images);
-  expect(result.current.turns[0].text).toBe('📎 1 image(s)');
+  expect(streamMock).toHaveBeenCalledWith('sid', '', expect.anything(), images, []);
+  expect(result.current.turns[0].text).toBe('📎 1 attachment(s)');
 });
 
 it('a completely empty send is a no-op', async () => {
@@ -177,7 +177,7 @@ it('a completely empty send is a no-op', async () => {
   await waitFor(() => expect(result.current.loading).toBe(false));
 
   await act(async () => {
-    await result.current.send('', [], jest.fn());
+    await result.current.send('', [], [], jest.fn());
   });
   expect(streamMock).not.toHaveBeenCalled();
   expect(result.current.sending).toBe(false);
@@ -280,7 +280,7 @@ it('hands an interrupted stream to catch-up instead of erroring', async () => {
     });
     const restore = jest.fn();
     await act(async () => {
-      await result.current.send('long task', [], restore);
+      await result.current.send('long task', [], [], restore);
     });
 
     // connection drops mid-stream, but the Mac is still working
@@ -317,13 +317,13 @@ it('restores the message when server-side enqueue fails', async () => {
 
   streamMock.mockReturnValue(() => {});
   await act(async () => {
-    await result.current.send('first', [], jest.fn());
+    await result.current.send('first', [], [], jest.fn());
   });
 
   enqueueResumeMock.mockRejectedValue(new Error('Bridge returned 500.'));
   const restore = jest.fn();
   await act(async () => {
-    await result.current.send('second', [], restore);
+    await result.current.send('second', [], [], restore);
   });
 
   expect(restore).toHaveBeenCalledTimes(1);
@@ -344,7 +344,7 @@ it('an offline catch-up poll fails quietly and does not tight-loop', async () =>
       return () => {};
     });
     await act(async () => {
-      await result.current.send('task', [], jest.fn());
+      await result.current.send('task', [], [], jest.fn());
     });
 
     // enter catch-up while the Mac is busy
@@ -373,4 +373,39 @@ it('an offline catch-up poll fails quietly and does not tight-loop', async () =>
   } finally {
     jest.useRealTimers();
   }
+});
+
+it('passes files through to the stream and previews attachment-only sends', async () => {
+  fetchMessagesMock.mockResolvedValue(page([]));
+  const { result } = await renderHook(() => useChatSession('sid'));
+  await waitFor(() => expect(result.current.loading).toBe(false));
+
+  const files = [{ name: 'report.pdf', data: 'b64' }];
+  await act(async () => {
+    await result.current.send('', [], files, jest.fn());
+  });
+
+  expect(streamMock).toHaveBeenCalledWith('sid', '', expect.anything(), [], files);
+  expect(result.current.turns[0].text).toBe('📎 1 attachment(s)');
+});
+
+it('queued sends carry files server-side', async () => {
+  fetchMessagesMock.mockResolvedValue(page([]));
+  const { result, unmount } = await renderHook(() => useChatSession('sid'));
+  await waitFor(() => expect(result.current.loading).toBe(false));
+
+  streamMock.mockReturnValue(() => {});
+  await act(async () => {
+    await result.current.send('first', [], [], jest.fn());
+  });
+
+  enqueueResumeMock.mockResolvedValue({ ok: true, session_id: 'sid', queued: 1 });
+  resumeStatusMock.mockResolvedValue({ ...idleStatus, running: true, queued: ['📎 1 attachment(s)'], queue_count: 1 });
+  const files = [{ name: 'data.csv', data: 'b64' }];
+  await act(async () => {
+    await result.current.send('', [], files, jest.fn());
+  });
+
+  expect(enqueueResumeMock).toHaveBeenCalledWith('sid', '', [], files);
+  await unmount();
 });

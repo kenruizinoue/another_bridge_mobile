@@ -6,6 +6,11 @@ import type { MessagesPage, SessionCard, ToolRef } from './types';
 // A base64 image to attach (raw base64, no data: prefix).
 export type OutgoingImage = { media_type: string; data: string };
 
+// A base64 file to attach (PDF, csv, txt, …). The bridge saves it on the
+// Mac and points claude at the path — the model Reads it itself, so any
+// text-readable extension works without inflating the prompt.
+export type OutgoingFile = { name: string; data: string };
+
 export type ResumeStatus = {
   running: boolean;
   started_at: number | null;
@@ -26,8 +31,9 @@ export async function enqueueResume(
   sessionId: string,
   message: string,
   images: OutgoingImage[] = [],
+  files: OutgoingFile[] = [],
 ): Promise<{ ok: boolean; session_id: string; queued: number }> {
-  return apiPost(`/sessions/${sessionId}/resume/queue`, { message, images });
+  return apiPost(`/sessions/${sessionId}/resume/queue`, { message, images, files });
 }
 
 export type StreamHandlers = {
@@ -47,12 +53,13 @@ export function resumeSessionStream(
   message: string,
   h: StreamHandlers,
   images: OutgoingImage[] = [],
+  files: OutgoingFile[] = [],
 ): () => void {
   let errored = false;
   let gotDone = false;
   return streamSSE(
     `/sessions/${sessionId}/resume/stream`,
-    { message, images },
+    { message, images, files },
     (ev, payload) => {
       if (ev === 'text') h.onText(payload.chunk ?? '');
       else if (ev === 'tool')

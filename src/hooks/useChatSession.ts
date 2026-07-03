@@ -9,6 +9,7 @@ import {
   fetchMessages,
   resumeSessionStream,
   resumeStatus,
+  type OutgoingFile,
   type OutgoingImage,
 } from '../api/sessions';
 import type { ToolRef, Turn } from '../api/types';
@@ -151,17 +152,17 @@ export default function useChatSession(sessionId: string) {
   // catch-up pulls it all when we return. `restore` is called when the
   // message must be handed back to the composer (send never started).
   const send = useCallback(
-    async (message: string, images: OutgoingImage[], restore: () => void) => {
-      if (!message && images.length === 0) return;
+    async (message: string, images: OutgoingImage[], files: OutgoingFile[], restore: () => void) => {
+      if (!message && images.length === 0 && files.length === 0) return;
       setSendError(null);
 
-      const preview = message || `📎 ${images.length} image(s)`;
+      const preview = message || `📎 ${images.length + files.length} attachment(s)`;
       const busy = sending || syncing || queued.length > 0;
       if (busy) {
         setQueued((q) => [...q, preview]); // optimistic; status polls reconcile
         inFlight.current = true;
         try {
-          await enqueueResume(sessionId, message, images);
+          await enqueueResume(sessionId, message, images, files);
         } catch (e) {
           setQueued((q) => {
             const i = q.lastIndexOf(preview);
@@ -234,6 +235,7 @@ export default function useChatSession(sessionId: string) {
           },
         },
         images,
+        files,
       );
     },
     [sending, syncing, queued.length, sessionId, catchUp],

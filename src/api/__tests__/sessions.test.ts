@@ -113,6 +113,7 @@ describe('endpoint wrappers', () => {
     expect(apiPostMock).toHaveBeenCalledWith('/sessions/sid/resume/queue', {
       message: 'queued msg',
       images,
+      files: [],
     });
   });
 
@@ -126,7 +127,7 @@ describe('endpoint wrappers', () => {
     });
     expect(streamSSEMock).toHaveBeenCalledWith(
       '/sessions/sid/resume/stream',
-      { message: 'go', images: [] },
+      { message: 'go', images: [], files: [] },
       expect.any(Function),
       expect.any(Function),
     );

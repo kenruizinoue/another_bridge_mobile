@@ -1,14 +1,18 @@
 import { fireEvent, render, screen } from '@testing-library/react-native';
 import Composer from '../Composer';
-import type { Attachment } from '../../hooks/useAttachments';
+import type { Attachment, FileAttachment } from '../../hooks/useAttachments';
 
 const baseProps = {
   draft: '',
   onChangeDraft: jest.fn(),
   attachments: [] as Attachment[],
+  files: [] as FileAttachment[],
   onPickImages: jest.fn(),
+  onPickFiles: jest.fn(),
   onRemoveAttachment: jest.fn(),
-  canAttach: true,
+  onRemoveFile: jest.fn(),
+  canAttachImages: true,
+  canAttachFiles: true,
   busy: false,
   onSend: jest.fn(),
 };
@@ -44,7 +48,7 @@ it('switches the placeholder to queueing while busy', async () => {
 });
 
 it('blocks the attach button when the image cap is reached', async () => {
-  await render(<Composer {...baseProps} canAttach={false} />);
+  await render(<Composer {...baseProps} canAttachImages={false} canAttachFiles={false} />);
   await fireEvent.press(screen.getByTestId('composer-attach'));
   expect(baseProps.onPickImages).not.toHaveBeenCalled();
 });
@@ -59,4 +63,45 @@ it('renders a thumbnail strip and removes the tapped image', async () => {
   await fireEvent.press(screen.getByTestId('thumb-remove-a.jpg'));
   expect(baseProps.onRemoveAttachment).toHaveBeenCalledWith('a.jpg');
   expect(screen.getByTestId('thumb-remove-b.jpg')).toBeOnTheScreen();
+});
+
+// ── The + attach menu and file chips ──────────────────────────────────
+
+it('the + button opens the attach sheet: photos or files', async () => {
+  const { ActionSheetIOS } = require('react-native');
+  const sheetSpy = jest
+    .spyOn(ActionSheetIOS, 'showActionSheetWithOptions')
+    .mockImplementation(((...args: unknown[]) => (args[1] as (i: number) => void)(1))); // choose "Files"
+
+  await render(<Composer {...baseProps} />);
+  await fireEvent.press(screen.getByTestId('composer-attach'));
+
+  expect(sheetSpy).toHaveBeenCalledWith(
+    expect.objectContaining({ options: ['Photo Library', 'Files', 'Cancel'] }),
+    expect.any(Function),
+  );
+  expect(baseProps.onPickFiles).toHaveBeenCalledTimes(1);
+  expect(baseProps.onPickImages).not.toHaveBeenCalled();
+
+  sheetSpy.mockImplementation(((...args: unknown[]) => (args[1] as (i: number) => void)(0))); // "Photo Library"
+  await fireEvent.press(screen.getByTestId('composer-attach'));
+  expect(baseProps.onPickImages).toHaveBeenCalledTimes(1);
+  sheetSpy.mockRestore();
+});
+
+it('renders file chips with name and size, removable per chip', async () => {
+  const files = [{ uri: 'r.pdf', name: 'report.pdf', size: 2 * 1024 * 1024, base64: 'x' }];
+  await render(<Composer {...baseProps} files={files} />);
+
+  expect(screen.getByText('report.pdf')).toBeOnTheScreen();
+  expect(screen.getByText('2.0MB')).toBeOnTheScreen();
+  await fireEvent.press(screen.getByTestId('file-remove-r.pdf'));
+  expect(baseProps.onRemoveFile).toHaveBeenCalledWith('r.pdf');
+});
+
+it('a file alone enables send', async () => {
+  const files = [{ uri: 'r.pdf', name: 'report.pdf', size: 10, base64: 'x' }];
+  await render(<Composer {...baseProps} files={files} />);
+  await fireEvent.press(screen.getByTestId('composer-send'));
+  expect(baseProps.onSend).toHaveBeenCalledTimes(1);
 });

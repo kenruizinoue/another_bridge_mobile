@@ -66,6 +66,10 @@ const page = (messages: Turn[]): MessagesPage => ({
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // the + button opens an iOS action sheet; auto-pick "Photo Library"
+  jest
+    .spyOn(require('react-native').ActionSheetIOS, 'showActionSheetWithOptions')
+    .mockImplementation(((...args: unknown[]) => (args[1] as (i: number) => void)(0)));
   resumeStatusMock.mockResolvedValue({ running: false, started_at: null, queued: [], queue_count: 0 });
   ImagePicker.requestMediaLibraryPermissionsAsync.mockResolvedValue({ granted: true });
   ImagePicker.launchImageLibraryAsync.mockResolvedValue({ canceled: true });
@@ -111,7 +115,7 @@ it('sends a typed message and shows the streaming reply until done', async () =>
 
   // optimistic user turn + working indicator
   expect(await screen.findByText('run the tests')).toBeOnTheScreen();
-  expect(streamMock).toHaveBeenCalledWith('sid', 'run the tests', expect.anything(), []);
+  expect(streamMock).toHaveBeenCalledWith('sid', 'run the tests', expect.anything(), [], []);
   expect(screen.getByText(/working on the Mac/)).toBeOnTheScreen();
 
   // chunks arrive → live monospace turn with cursor
@@ -157,6 +161,7 @@ it('restores the draft and the attachments when a send fails to start', async ()
     'take this image',
     expect.anything(),
     [{ media_type: 'image/jpeg', data: 'b64-of-pic.png' }],
+    [],
   );
 
   // …and a failure hands everything back: text, thumbnail, and the error

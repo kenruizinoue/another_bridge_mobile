@@ -9,14 +9,14 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import type { OutgoingImage } from '../api/sessions';
+import type { OutgoingFile, OutgoingImage } from '../api/sessions';
 import type { SessionCard } from '../api/types';
 import ChatStatusBar from '../components/ChatStatusBar';
 import Composer from '../components/Composer';
 import GlassIconButton from '../components/GlassIconButton';
 import StreamingTurn from '../components/StreamingTurn';
 import TurnRow from '../components/TurnRow';
-import useAttachments, { MAX_IMAGES } from '../hooks/useAttachments';
+import useAttachments, { MAX_FILES, MAX_IMAGES } from '../hooks/useAttachments';
 import useChatSession from '../hooks/useChatSession';
 import { colors, font, mono, space } from '../theme';
 
@@ -42,15 +42,20 @@ export default function ChatScreen({
       media_type: 'image/jpeg',
       data: a.base64,
     }));
-    if (!message && out.length === 0) return;
-    const sent = images.attachments; // to restore on failure
+    const outFiles: OutgoingFile[] = images.files.map((f) => ({
+      name: f.name,
+      data: f.base64,
+    }));
+    if (!message && out.length === 0 && outFiles.length === 0) return;
+    const sentImages = images.attachments; // to restore on failure
+    const sentFiles = images.files;
     setDraft('');
     images.clear();
     setPickError(null);
-    void chat.send(message, out, () => {
+    void chat.send(message, out, outFiles, () => {
       // Send never started — hand the message back to the composer.
       setDraft(message);
-      images.restore(sent);
+      images.restore(sentImages, sentFiles);
     });
   }, [draft, images, chat]);
 
@@ -124,12 +129,19 @@ export default function ChatScreen({
           draft={draft}
           onChangeDraft={setDraft}
           attachments={images.attachments}
+          files={images.files}
           onPickImages={() => {
             setPickError(null);
             void images.pick();
           }}
+          onPickFiles={() => {
+            setPickError(null);
+            void images.pickFiles();
+          }}
           onRemoveAttachment={images.remove}
-          canAttach={images.attachments.length < MAX_IMAGES}
+          onRemoveFile={images.removeFile}
+          canAttachImages={images.attachments.length < MAX_IMAGES}
+          canAttachFiles={images.files.length < MAX_FILES}
           busy={busy}
           onSend={handleSend}
         />

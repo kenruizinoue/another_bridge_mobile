@@ -1,6 +1,8 @@
 # another_bridge_mobile
 
-A terminal-styled iOS client (Expo / React Native) for [another_bridge](https://github.com/kenruizinoue/another_bridge). Browse the Claude Code sessions on your Mac from your phone, read any conversation, and continue it: your message runs `claude --resume` on the Mac and the reply streams back token by token, with image attachments supported.
+A terminal-styled iOS client (Expo / React Native) for [another_bridge](https://github.com/kenruizinoue/another_bridge). Browse the Claude Code sessions on your Mac from your phone, read any conversation, and continue it: your message runs `claude --resume` on the Mac and the reply streams back token by token, with image and file attachments supported.
+
+Attachments work two ways: images are sent inline so Claude sees them, while files (PDF, txt, csv, md, json, code) are saved on the Mac and Claude reads them with its own Read tool. That means a 15MB CSV never inflates the prompt, and the file stays available for follow-up turns. Requires another_bridge 0.2.0 or newer.
 
 Built for one person and one Mac. No accounts, no backend of its own. The only server is the bridge you run yourself.
 
