@@ -1,13 +1,15 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { OutgoingFile, OutgoingImage } from '../api/sessions';
 import type { SessionCard } from '../api/types';
@@ -18,6 +20,7 @@ import StreamingTurn from '../components/StreamingTurn';
 import TurnRow from '../components/TurnRow';
 import useAttachments, { MAX_FILES, MAX_IMAGES } from '../hooks/useAttachments';
 import useChatSession from '../hooks/useChatSession';
+import useVoiceInput from '../hooks/useVoiceInput';
 import { colors, font, mono, space } from '../theme';
 
 // Terminal-style conversation view: full width, no bubbles, monospace,
@@ -35,6 +38,13 @@ export default function ChatScreen({
   const [draft, setDraft] = useState('');
   const [pickError, setPickError] = useState<string | null>(null);
   const images = useAttachments(setPickError);
+  const voice = useVoiceInput({
+    // Dictation lands in the draft (appended after any typed text) — the
+    // user still reviews and taps send themselves.
+    onText: (text) =>
+      setDraft((current) => (current.trim() ? `${current.replace(/\s+$/, '')} ${text}` : text)),
+    onError: setPickError,
+  });
 
   const handleSend = useCallback(() => {
     const message = draft.trim();
@@ -60,6 +70,12 @@ export default function ChatScreen({
   }, [draft, images, chat]);
 
   const busy = chat.sending || chat.syncing || chat.queued.length > 0;
+
+  // Inverted list → contentOffset.y 0 is the visual bottom. Tracked so the
+  // "new reply" pill only shows while reading older turns during a stream.
+  const listRef = useRef<FlatList>(null);
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
+  const showJumpPill = awayFromBottom && chat.sending;
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -92,29 +108,52 @@ export default function ChatScreen({
           <Text style={styles.errorMsg}>{chat.error}</Text>
         </View>
       ) : (
-        <FlatList
-          testID="chat-list"
-          data={chat.turns}
-          inverted
-          keyExtractor={(t) => String(t.index)}
-          renderItem={({ item }) => <TurnRow turn={item} />}
-          contentContainerStyle={styles.listContent}
-          // Inverted list → the header renders at the visual BOTTOM, below
-          // the just-sent user turn, which is exactly where the live reply
-          // should stream in.
-          ListHeaderComponent={
-            chat.sending ? <StreamingTurn text={chat.streamText} tools={chat.streamTools} /> : null
-          }
-          onEndReached={chat.loadOlder}
-          onEndReachedThreshold={0.4}
-          ListFooterComponent={
-            chat.loadingMore ? (
-              <ActivityIndicator color={colors.accent} style={{ marginVertical: 16 }} />
-            ) : !chat.hasMore && chat.turns.length ? (
-              <Text style={styles.topMarker}>— start of conversation —</Text>
-            ) : null
-          }
-        />
+        <View style={styles.listWrap}>
+          <FlatList
+            ref={listRef}
+            testID="chat-list"
+            data={chat.turns}
+            inverted
+            keyExtractor={(t) => String(t.index)}
+            renderItem={({ item }) => <TurnRow turn={item} />}
+            contentContainerStyle={styles.listContent}
+            // Anchor the first visible row so a growing stream below never
+            // drags the reader; within 80px of the bottom it auto-follows.
+            maintainVisibleContentPosition={{
+              minIndexForVisible: 0,
+              autoscrollToTopThreshold: 80,
+            }}
+            onScroll={(e) => setAwayFromBottom(e.nativeEvent.contentOffset.y > 80)}
+            scrollEventThrottle={100}
+            // Inverted list → the header renders at the visual BOTTOM, below
+            // the just-sent user turn, which is exactly where the live reply
+            // should stream in.
+            ListHeaderComponent={
+              chat.sending ? (
+                <StreamingTurn text={chat.streamText} tools={chat.streamTools} />
+              ) : null
+            }
+            onEndReached={chat.loadOlder}
+            onEndReachedThreshold={0.4}
+            ListFooterComponent={
+              chat.loadingMore ? (
+                <ActivityIndicator color={colors.accent} style={{ marginVertical: 16 }} />
+              ) : !chat.hasMore && chat.turns.length ? (
+                <Text style={styles.topMarker}>— start of conversation —</Text>
+              ) : null
+            }
+          />
+          {showJumpPill ? (
+            <Pressable
+              testID="jump-to-latest"
+              style={styles.jumpPill}
+              onPress={() => listRef.current?.scrollToOffset({ offset: 0, animated: true })}
+            >
+              <Ionicons name="arrow-down" size={13} color={colors.accent} />
+              <Text style={styles.jumpPillText}>new reply</Text>
+            </Pressable>
+          ) : null}
+        </View>
       )}
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -143,6 +182,11 @@ export default function ChatScreen({
           canAttachImages={images.attachments.length < MAX_IMAGES}
           canAttachFiles={images.files.length < MAX_FILES}
           busy={busy}
+          voiceStatus={voice.status}
+          onMicPress={() => {
+            setPickError(null);
+            voice.toggle();
+          }}
           onSend={handleSend}
         />
       </KeyboardAvoidingView>
@@ -169,7 +213,23 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.divider,
   },
+  listWrap: { flex: 1 },
   listContent: { paddingHorizontal: space.md, paddingVertical: space.md },
+  jumpPill: {
+    position: 'absolute',
+    bottom: 10,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(94,177,255,0.35)',
+    backgroundColor: 'rgba(13,19,26,0.92)',
+  },
+  jumpPillText: { color: colors.accent, fontSize: font.tiny, fontFamily: mono },
   topMarker: { color: '#4a5666', fontSize: font.tiny, fontFamily: mono, textAlign: 'center', marginVertical: space.lg },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: space.sm },
   dim: { color: colors.textDim, fontSize: font.meta },

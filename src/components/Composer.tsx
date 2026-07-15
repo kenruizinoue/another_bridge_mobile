@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import type { Attachment, FileAttachment } from '../hooks/useAttachments';
+import type { VoiceStatus } from '../hooks/useVoiceInput';
 import { colors, font, mono, space } from '../theme';
 import GlassIconButton from './GlassIconButton';
 
@@ -22,9 +23,9 @@ function prettySize(bytes: number): string {
 }
 
 // The message composer: attachment strip (image thumbnails + file chips)
-// plus the input row — a single + button (action sheet: photos or files),
-// growing text input, send button. Pure presentation; all state lives in
-// the screen's hooks.
+// plus the input row — a + button (action sheet: photos or files), a mic
+// button (dictation into the draft, never auto-send), growing text input,
+// send button. Pure presentation; all state lives in the screen's hooks.
 export default function Composer({
   draft,
   onChangeDraft,
@@ -37,6 +38,8 @@ export default function Composer({
   canAttachImages,
   canAttachFiles,
   busy,
+  voiceStatus,
+  onMicPress,
   onSend,
 }: {
   draft: string;
@@ -50,6 +53,8 @@ export default function Composer({
   canAttachImages: boolean;
   canAttachFiles: boolean;
   busy: boolean; // a turn is running / queued → sending will queue
+  voiceStatus: VoiceStatus;
+  onMicPress: () => void;
   onSend: () => void;
 }) {
   const hasContent = !!draft.trim() || attachments.length > 0 || files.length > 0;
@@ -117,62 +122,96 @@ export default function Composer({
         </ScrollView>
       ) : null}
 
-      <View style={styles.inputRow}>
-        <GlassIconButton
-          name="add"
-          onPress={openAttachMenu}
-          disabled={!canAttachImages && !canAttachFiles}
-          size={38}
-          testID="composer-attach"
-        />
-        <TextInput
-          testID="composer-input"
-          style={styles.input}
-          value={draft}
-          onChangeText={onChangeDraft}
-          // Always editable — typing while a turn runs QUEUES the message.
-          placeholder={busy ? 'Queue a message…' : 'Message… (continues this session)'}
-          placeholderTextColor="#4a5666"
-          multiline
-        />
-        <GlassIconButton
-          name="arrow-up"
-          onPress={onSend}
-          disabled={!hasContent}
-          filled={hasContent}
-          size={40}
-          testID="composer-send"
-        />
+      {/* Claude-app style card: the input gets the full top row (grows to
+          7 lines, then scrolls); all buttons live on the row below. */}
+      <View style={styles.composerWrap}>
+        <View style={styles.card}>
+          <TextInput
+            testID="composer-input"
+            style={styles.input}
+            value={draft}
+            onChangeText={onChangeDraft}
+            // Always editable — typing while a turn runs QUEUES the message.
+            placeholder={
+              voiceStatus === 'recording'
+                ? 'Recording… tap stop to transcribe'
+                : voiceStatus === 'transcribing'
+                  ? 'Transcribing…'
+                  : busy
+                    ? 'Queue a message…'
+                    : 'Message… (continues this session)'
+            }
+            placeholderTextColor="#4a5666"
+            multiline
+          />
+          <View style={styles.buttonRow}>
+            <GlassIconButton
+              name="add"
+              onPress={openAttachMenu}
+              disabled={!canAttachImages && !canAttachFiles}
+              size={36}
+              testID="composer-attach"
+            />
+            <GlassIconButton
+              name={voiceStatus === 'recording' ? 'stop' : 'mic'}
+              onPress={onMicPress}
+              busy={voiceStatus === 'transcribing'}
+              filled={voiceStatus === 'recording'}
+              size={36}
+              testID="composer-mic"
+            />
+            <View style={styles.buttonSpacer} />
+            <GlassIconButton
+              name="arrow-up"
+              onPress={onSend}
+              disabled={!hasContent}
+              filled={hasContent}
+              size={36}
+              testID="composer-send"
+            />
+          </View>
+        </View>
       </View>
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  inputRow: {
+  composerWrap: {
+    paddingHorizontal: space.md,
+    paddingTop: space.sm,
+    paddingBottom: space.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.divider,
+    backgroundColor: colors.bg,
+  },
+  card: {
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.inputBg,
+    paddingHorizontal: space.md,
+    paddingTop: space.md,
+    paddingBottom: space.sm,
+  },
+  input: {
+    color: colors.textBody,
+    fontSize: font.body,
+    fontFamily: mono,
+    lineHeight: 18,
+    // Grows to exactly 7 lines (7 × 18 = 126) before scrolling.
+    maxHeight: 126,
+    paddingTop: 0,
+    paddingBottom: 0,
+    paddingHorizontal: 2,
+    marginBottom: space.sm,
+  },
+  buttonRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.sm,
-    paddingHorizontal: space.md,
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderTopColor: colors.divider,
-    backgroundColor: colors.inputBg,
   },
-  input: {
-    flex: 1,
-    color: colors.textBody,
-    fontSize: font.title,
-    fontFamily: mono,
-    lineHeight: 20,
-    // Single line renders exactly 20 + 9 + 9 = 38px — the attach button's
-    // height — so with the row's alignItems: 'center' the input, attach,
-    // and send all share a vertical center instead of drifting a few px.
-    minHeight: 38,
-    maxHeight: 110,
-    paddingVertical: 9,
-    paddingHorizontal: 0,
-  },
+  buttonSpacer: { flex: 1 },
   thumbStrip: { backgroundColor: colors.inputBg, borderTopWidth: 1, borderTopColor: colors.divider },
   thumbStripContent: { padding: space.sm, gap: space.sm },
   thumbWrap: { width: 60, height: 60 },

@@ -133,6 +133,47 @@ it('sends a typed message and shows the streaming reply until done', async () =>
   expect(screen.getByTestId('composer-input').props.value).toBe('');
 });
 
+it('shows the jump-to-latest pill only when scrolled up during a stream', async () => {
+  fetchMessagesMock.mockResolvedValue(page([turn(1, 'user', 'earlier')]));
+  let handlers!: StreamHandlers;
+  streamMock.mockImplementation((_sid, _msg, h) => {
+    handlers = h;
+    return () => {};
+  });
+  await render(<ChatScreen session={session} onBack={jest.fn()} />);
+  await screen.findByText('earlier');
+
+  await fireEvent.changeText(screen.getByTestId('composer-input'), 'go');
+  await fireEvent.press(screen.getByTestId('composer-send'));
+  await waitFor(() => handlers.onText('streaming…'));
+
+  // at the bottom (offset 0 in an inverted list) → no pill
+  expect(screen.queryByTestId('jump-to-latest')).not.toBeOnTheScreen();
+
+  // reader scrolls up into history while the reply streams → pill appears
+  await fireEvent.scroll(screen.getByTestId('chat-list'), {
+    nativeEvent: { contentOffset: { y: 300 } },
+  });
+  expect(screen.getByTestId('jump-to-latest')).toBeOnTheScreen();
+
+  // back near the bottom → pill hides
+  await fireEvent.scroll(screen.getByTestId('chat-list'), {
+    nativeEvent: { contentOffset: { y: 0 } },
+  });
+  expect(screen.queryByTestId('jump-to-latest')).not.toBeOnTheScreen();
+
+  // pill never shows when nothing is streaming
+  await fireEvent.scroll(screen.getByTestId('chat-list'), {
+    nativeEvent: { contentOffset: { y: 300 } },
+  });
+  fetchMessagesMock.mockResolvedValue(
+    page([turn(3, 'assistant', 'done'), turn(2, 'user', 'go')]),
+  );
+  await waitFor(async () => handlers.onDone());
+  await screen.findByText('done');
+  expect(screen.queryByTestId('jump-to-latest')).not.toBeOnTheScreen();
+});
+
 it('restores the draft and the attachments when a send fails to start', async () => {
   fetchMessagesMock.mockResolvedValue(page([]));
   let handlers!: StreamHandlers;

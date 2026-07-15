@@ -11,7 +11,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Constants from 'expo-constants';
 import { fetchSessions } from '../api/sessions';
 import type { SessionCard as Card } from '../api/types';
+import GlassIconButton from '../components/GlassIconButton';
 import SessionCard from '../components/SessionCard';
+import SettingsSheet from '../components/SettingsSheet';
 import { colors, font, mono, space } from '../theme';
 
 // The card list. Tapping a card calls onOpen(card).
@@ -20,6 +22,7 @@ export default function SessionListScreen({ onOpen }: { onOpen: (card: Card) => 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
 
   const load = useCallback(async (isRefresh = false) => {
     isRefresh ? setRefreshing(true) : setLoading(true);
@@ -40,11 +43,19 @@ export default function SessionListScreen({ onOpen }: { onOpen: (card: Card) => 
   return (
     <SafeAreaView style={styles.screen}>
       <View style={styles.header}>
+        <GlassIconButton
+          name="settings-outline"
+          onPress={() => setShowSettings(true)}
+          size={34}
+          testID="open-settings"
+        />
         <Text style={styles.headerTitle}>Conversations</Text>
         {!loading && !error ? <Text style={styles.headerCount}>{sessions.length}</Text> : null}
         <View style={styles.headerSpacer} />
         <Text style={styles.version}>v{Constants.expoConfig?.version ?? '?'}</Text>
       </View>
+
+      <SettingsSheet visible={showSettings} onClose={() => setShowSettings(false)} />
 
       {loading ? (
         <View style={styles.center}>
@@ -82,13 +93,14 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
   header: {
     flexDirection: 'row',
-    alignItems: 'baseline',
+    alignItems: 'center',
+    gap: space.md,
     paddingHorizontal: space.xl,
     paddingTop: space.sm,
     paddingBottom: space.md,
   },
   headerTitle: { color: colors.textPrimary, fontSize: 26, fontWeight: '700' },
-  headerCount: { color: colors.accent, fontSize: font.title, fontWeight: '600', marginLeft: 10 },
+  headerCount: { color: colors.accent, fontSize: font.title, fontWeight: '600' },
   headerSpacer: { flex: 1 },
   version: { color: colors.textFaint, fontSize: font.tiny, fontFamily: mono },
   listContent: { paddingVertical: 6, paddingBottom: 24 },

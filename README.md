@@ -4,6 +4,8 @@ A terminal-styled iOS client (Expo / React Native) for [another_bridge](https://
 
 Attachments work two ways: images are sent inline so Claude sees them, while files (PDF, txt, csv, md, json, code) are saved on the Mac and Claude reads them with its own Read tool. That means a 15MB CSV never inflates the prompt, and the file stays available for follow-up turns. Requires another_bridge 0.2.0 or newer.
 
+Voice input: the mic button dictates into the composer (the transcript is never auto-sent, you review it first). Three engines with automatic fallback, picked in the in-app settings: Apple on-device speech (default, free, offline), on-device multilingual Whisper small (one-time 466MB model download), or the OpenAI cloud API if you set `EXPO_PUBLIC_OPENAI_API_KEY` in `.env.local`. The dictation language (English or Spanish) is also a setting and is passed explicitly to every engine, so accuracy doesn't depend on auto-detection.
+
 Built for one person and one Mac. No accounts, no backend of its own. The only server is the bridge you run yourself.
 
 ## How it works

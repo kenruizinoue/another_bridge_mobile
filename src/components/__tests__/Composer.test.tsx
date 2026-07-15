@@ -14,6 +14,8 @@ const baseProps = {
   canAttachImages: true,
   canAttachFiles: true,
   busy: false,
+  voiceStatus: 'idle' as const,
+  onMicPress: jest.fn(),
   onSend: jest.fn(),
 };
 
@@ -104,4 +106,27 @@ it('a file alone enables send', async () => {
   await render(<Composer {...baseProps} files={files} />);
   await fireEvent.press(screen.getByTestId('composer-send'));
   expect(baseProps.onSend).toHaveBeenCalledTimes(1);
+});
+
+// ── The mic (dictation) button ─────────────────────────────────────────
+
+it('the mic button reports presses to the screen', async () => {
+  await render(<Composer {...baseProps} />);
+  await fireEvent.press(screen.getByTestId('composer-mic'));
+  expect(baseProps.onMicPress).toHaveBeenCalledTimes(1);
+  expect(baseProps.onSend).not.toHaveBeenCalled();
+});
+
+it('recording swaps the placeholder and keeps the mic pressable (stop)', async () => {
+  await render(<Composer {...baseProps} voiceStatus="recording" />);
+  expect(screen.getByPlaceholderText('Recording… tap stop to transcribe')).toBeOnTheScreen();
+  await fireEvent.press(screen.getByTestId('composer-mic'));
+  expect(baseProps.onMicPress).toHaveBeenCalledTimes(1);
+});
+
+it('transcribing shows a busy mic that ignores presses', async () => {
+  await render(<Composer {...baseProps} voiceStatus="transcribing" />);
+  expect(screen.getByPlaceholderText('Transcribing…')).toBeOnTheScreen();
+  await fireEvent.press(screen.getByTestId('composer-mic'));
+  expect(baseProps.onMicPress).not.toHaveBeenCalled();
 });

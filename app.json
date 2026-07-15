@@ -2,7 +2,7 @@
   "expo": {
     "name": "another_bridge_mobile",
     "slug": "another_bridge_mobile",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -27,6 +27,19 @@
         "expo-image-picker",
         {
           "photosPermission": "Attach images from your library to a Claude Code session."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Record your voice to dictate a message into the composer."
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Record your voice to dictate a message into the composer.",
+          "speechRecognitionPermission": "Transcribe your voice into text on device."
         }
       ]
     ]
