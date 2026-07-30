@@ -32,8 +32,14 @@ export async function enqueueResume(
   message: string,
   images: OutgoingImage[] = [],
   files: OutgoingFile[] = [],
+  voice = false,
 ): Promise<{ ok: boolean; session_id: string; queued: number }> {
-  return apiPost(`/sessions/${sessionId}/resume/queue`, { message, images, files });
+  return apiPost(`/sessions/${sessionId}/resume/queue`, {
+    message,
+    images,
+    files,
+    ...(voice && { voice: true }),
+  });
 }
 
 export type StreamHandlers = {
@@ -43,6 +49,8 @@ export type StreamHandlers = {
   onError: (message: string) => void; // couldn't start / bridge error
   onInterrupted: () => void; // connection dropped mid-stream; the message
   // was sent and Claude may still be finishing on the Mac
+  onSpeech?: (speech: string) => void; // voice turns only: the schema-
+  // guaranteed spoken summary, emitted just before `done`
 };
 
 // Streaming resume: reads the SSE the bridge emits and dispatches each
@@ -54,16 +62,18 @@ export function resumeSessionStream(
   h: StreamHandlers,
   images: OutgoingImage[] = [],
   files: OutgoingFile[] = [],
+  voice = false,
 ): () => void {
   let errored = false;
   let gotDone = false;
   return streamSSE(
     `/sessions/${sessionId}/resume/stream`,
-    { message, images, files },
+    { message, images, files, ...(voice && { voice: true }) },
     (ev, payload) => {
       if (ev === 'text') h.onText(payload.chunk ?? '');
       else if (ev === 'tool')
         h.onTool({ name: payload.name ?? '', label: payload.label ?? '', stat: payload.stat ?? null });
+      else if (ev === 'speech') h.onSpeech?.(payload.speech ?? '');
       else if (ev === 'done') {
         gotDone = true;
         h.onDone(); // the ONLY reliable "finished" signal

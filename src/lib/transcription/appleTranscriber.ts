@@ -2,7 +2,9 @@ import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
 import { Platform } from 'react-native';
 import type { TranscribeOptions, Transcriber } from './types';
 
-const MAX_WAIT_MS = 30_000;
+// Generous: recordings are capped at 3 min (useVoiceInput), and on-device
+// recognition of a clip that long can legitimately take a while.
+const MAX_WAIT_MS = 120_000;
 
 function available(): boolean {
   return Platform.OS === 'ios' && !!ExpoSpeechRecognitionModule;

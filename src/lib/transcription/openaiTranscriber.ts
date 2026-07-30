@@ -2,7 +2,9 @@ import { getOpenAiApiKey } from '../env';
 import type { TranscribeOptions, Transcriber } from './types';
 
 const ENDPOINT = 'https://api.openai.com/v1/audio/transcriptions';
-const MODEL = 'gpt-4o-mini-transcribe';
+// The full transcribe model: noticeably better than -mini on accents and
+// noisy audio, same pricing tier difference accepted for voice mode.
+const MODEL = 'gpt-4o-transcribe';
 
 /**
  * Cloud transcription via the OpenAI API, called directly from the app

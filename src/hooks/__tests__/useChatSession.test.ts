@@ -148,7 +148,7 @@ it('queues server-side when a turn is already running', async () => {
     await result.current.send('second', [], [], jest.fn());
   });
 
-  expect(enqueueResumeMock).toHaveBeenCalledWith('sid', 'second', [], []);
+  expect(enqueueResumeMock).toHaveBeenCalledWith('sid', 'second', [], [], false);
   expect(streamMock).toHaveBeenCalledTimes(1); // no second live stream
   await waitFor(() => expect(result.current.queued).toContain('second'));
   expect(result.current.syncing).toBe(true);
@@ -167,7 +167,7 @@ it('passes images through to the stream and previews image-only sends', async ()
   });
 
   // images reach the wire call, and the optimistic turn shows a preview
-  expect(streamMock).toHaveBeenCalledWith('sid', '', expect.anything(), images, []);
+  expect(streamMock).toHaveBeenCalledWith('sid', '', expect.anything(), images, [], false);
   expect(result.current.turns[0].text).toBe('📎 1 attachment(s)');
 });
 
@@ -385,7 +385,7 @@ it('passes files through to the stream and previews attachment-only sends', asyn
     await result.current.send('', [], files, jest.fn());
   });
 
-  expect(streamMock).toHaveBeenCalledWith('sid', '', expect.anything(), [], files);
+  expect(streamMock).toHaveBeenCalledWith('sid', '', expect.anything(), [], files, false);
   expect(result.current.turns[0].text).toBe('📎 1 attachment(s)');
 });
 
@@ -406,6 +406,45 @@ it('queued sends carry files server-side', async () => {
     await result.current.send('', [], files, jest.fn());
   });
 
-  expect(enqueueResumeMock).toHaveBeenCalledWith('sid', '', [], files);
+  expect(enqueueResumeMock).toHaveBeenCalledWith('sid', '', [], files, false);
   await unmount();
+});
+
+it('voice sends pass the flag to the stream and capture the speech event', async () => {
+  fetchMessagesMock.mockResolvedValue(page([]));
+  const { result } = await renderHook(() => useChatSession('sid'));
+  await waitFor(() => expect(result.current.loading).toBe(false));
+
+  await act(async () => {
+    void result.current.send('run tests', [], [], () => {}, { voice: true });
+  });
+
+  const [, message, handlers, , , voice] = streamMock.mock.calls[0];
+  expect(message).toBe('run tests');
+  expect(voice).toBe(true);
+
+  await act(async () => {
+    (handlers as StreamHandlers).onSpeech?.('Done, all green.');
+  });
+  expect(result.current.speech).toBe('Done, all green.');
+});
+
+it('a new send clears the previous speech', async () => {
+  fetchMessagesMock.mockResolvedValue(page([]));
+  const { result } = await renderHook(() => useChatSession('sid'));
+  await waitFor(() => expect(result.current.loading).toBe(false));
+
+  await act(async () => {
+    void result.current.send('first', [], [], () => {}, { voice: true });
+  });
+  await act(async () => {
+    (streamMock.mock.calls[0][2] as StreamHandlers).onSpeech?.('old speech');
+    (streamMock.mock.calls[0][2] as StreamHandlers).onDone();
+  });
+  await waitFor(() => expect(result.current.sending).toBe(false));
+
+  await act(async () => {
+    void result.current.send('second', [], [], () => {});
+  });
+  expect(result.current.speech).toBeNull();
 });

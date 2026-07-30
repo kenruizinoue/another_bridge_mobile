@@ -40,6 +40,7 @@ export default function Composer({
   busy,
   voiceStatus,
   onMicPress,
+  onConversationPress,
   onSend,
 }: {
   draft: string;
@@ -55,6 +56,9 @@ export default function Composer({
   busy: boolean; // a turn is running / queued → sending will queue
   voiceStatus: VoiceStatus;
   onMicPress: () => void;
+  // Hands-free conversation mode toggle (the waveform button). The mic
+  // stays dictation-into-draft; this enters the listen/speak loop.
+  onConversationPress?: () => void;
   onSend: () => void;
 }) {
   const hasContent = !!draft.trim() || attachments.length > 0 || files.length > 0;
@@ -160,6 +164,14 @@ export default function Composer({
               size={36}
               testID="composer-mic"
             />
+            {onConversationPress ? (
+              <GlassIconButton
+                name="pulse"
+                onPress={onConversationPress}
+                size={36}
+                testID="composer-conversation"
+              />
+            ) : null}
             <View style={styles.buttonSpacer} />
             <GlassIconButton
               name="arrow-up"

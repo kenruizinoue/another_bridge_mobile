@@ -30,6 +30,9 @@ export default function useChatSession(sessionId: string) {
   const [streamTools, setStreamTools] = useState<ToolRef[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [queued, setQueued] = useState<string[]>([]);
+  // Voice turns only: the schema-guaranteed spoken summary of the last
+  // finished reply (null otherwise / until it lands).
+  const [speech, setSpeech] = useState<string | null>(null);
 
   // Catch-up state. `inFlight` = a turn we sent is still expected to be
   // running on the Mac (kept in a ref so listeners see the latest without
@@ -152,9 +155,17 @@ export default function useChatSession(sessionId: string) {
   // catch-up pulls it all when we return. `restore` is called when the
   // message must be handed back to the composer (send never started).
   const send = useCallback(
-    async (message: string, images: OutgoingImage[], files: OutgoingFile[], restore: () => void) => {
+    async (
+      message: string,
+      images: OutgoingImage[],
+      files: OutgoingFile[],
+      restore: () => void,
+      options?: { voice?: boolean },
+    ) => {
       if (!message && images.length === 0 && files.length === 0) return;
       setSendError(null);
+      setSpeech(null);
+      const voice = options?.voice ?? false;
 
       const preview = message || `📎 ${images.length + files.length} attachment(s)`;
       const busy = sending || syncing || queued.length > 0;
@@ -162,7 +173,7 @@ export default function useChatSession(sessionId: string) {
         setQueued((q) => [...q, preview]); // optimistic; status polls reconcile
         inFlight.current = true;
         try {
-          await enqueueResume(sessionId, message, images, files);
+          await enqueueResume(sessionId, message, images, files, voice);
         } catch (e) {
           setQueued((q) => {
             const i = q.lastIndexOf(preview);
@@ -209,6 +220,7 @@ export default function useChatSession(sessionId: string) {
         {
           onText: (chunk) => setStreamText((t) => t + chunk),
           onTool: (tool) => setStreamTools((ts) => [...ts, tool]),
+          onSpeech: setSpeech,
           onError: (msg) => {
             // Failed before producing a turn (couldn't reach bridge / 409 /
             // bad key) — roll back so the message isn't lost.
@@ -236,6 +248,7 @@ export default function useChatSession(sessionId: string) {
         },
         images,
         files,
+        voice,
       );
     },
     [sending, syncing, queued.length, sessionId, catchUp],
@@ -285,5 +298,6 @@ export default function useChatSession(sessionId: string) {
     queued,
     streamText,
     streamTools,
+    speech,
   };
 }

@@ -3,7 +3,7 @@
 // permission denial, and engine failure surfacing through onError.
 import { act, renderHook } from '@testing-library/react-native';
 import { AudioModule, useAudioRecorder } from 'expo-audio';
-import useVoiceInput from '../useVoiceInput';
+import useVoiceInput, { MAX_RECORDING_MS } from '../useVoiceInput';
 import { transcriptionRouter } from '../../lib/transcription/router';
 
 jest.mock('../../lib/transcription/router', () => ({
@@ -78,6 +78,32 @@ it('a failed transcription surfaces through onError, not onText', async () => {
   expect(onText).not.toHaveBeenCalled();
   expect(onError).toHaveBeenCalledWith(expect.stringMatching(/Transcription failed/));
   expect(result.current.status).toBe('idle');
+});
+
+it('auto-stops and transcribes when the 3-minute cap is reached', async () => {
+  jest.useFakeTimers();
+  try {
+    const recorder = makeRecorder('file://rec.wav');
+    useRecorderMock.mockReturnValue(recorder);
+    transcribeMock.mockResolvedValue({ text: 'capped text', engine: 'apple' });
+    const onText = jest.fn();
+    const onError = jest.fn();
+    const { result } = await renderHook(() => useVoiceInput({ onText, onError }));
+
+    await act(async () => result.current.toggle()); // start
+    expect(result.current.status).toBe('recording');
+
+    await act(async () => {
+      jest.advanceTimersByTime(MAX_RECORDING_MS);
+    });
+    await act(async () => {}); // flush the auto-stop's async chain
+
+    expect(recorder.stop).toHaveBeenCalled();
+    expect(onText).toHaveBeenCalledWith('capped text');
+    expect(result.current.status).toBe('idle');
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 it('a recording that produced no file reports an error', async () => {

@@ -1,5 +1,6 @@
 // The settings sheet: three engine tabs (same trio as another_interviewer),
 // the whisper model download kick, and the version row.
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import SettingsSheet from '../SettingsSheet';
 import {
@@ -124,4 +125,35 @@ it('close button calls onClose', async () => {
 
   await fireEvent.press(screen.getByTestId('settings-close'));
   expect(onClose).toHaveBeenCalled();
+});
+
+it('shows the reply-voice tabs and persists a speech engine change', async () => {
+  await render(<SettingsSheet visible onClose={jest.fn()} />);
+  await waitFor(() => expect(screen.getByTestId('speech-device')).toBeOnTheScreen());
+  await fireEvent.press(screen.getByTestId('speech-bridge'));
+  expect(await AsyncStorage.getItem('speech-engine')).toBe('bridge');
+});
+
+it('barge-in toggle persists the preference', async () => {
+  await render(<SettingsSheet visible onClose={jest.fn()} />);
+  const toggle = await screen.findByTestId('barge-in-toggle');
+  await fireEvent(toggle, 'valueChange', true);
+  expect(await AsyncStorage.getItem('voice-barge-in')).toBe('true');
+});
+
+it('neural tab lists voices and selecting one persists it', async () => {
+  await render(<SettingsSheet visible onClose={jest.fn()} />);
+  await fireEvent.press(await screen.findByTestId('speech-neural'));
+  expect(await screen.findByTestId('neural-voice-lessac-high')).toBeOnTheScreen();
+  await fireEvent.press(screen.getByTestId('neural-voice-ryan-high'));
+  await waitFor(async () =>
+    expect(await AsyncStorage.getItem('speech-neural-voice')).toBe('ryan-high'),
+  );
+});
+
+it('openai tab shows voice chips and persists the choice', async () => {
+  await render(<SettingsSheet visible onClose={jest.fn()} />);
+  await fireEvent.press(await screen.findByTestId('speech-openai'));
+  await fireEvent.press(await screen.findByTestId('openai-voice-nova'));
+  expect(await AsyncStorage.getItem('speech-openai-voice')).toBe('nova');
 });

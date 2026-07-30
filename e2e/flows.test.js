@@ -40,3 +40,34 @@ describe('another_bridge_mobile', () => {
       .withTimeout(10000);
   });
 });
+
+// Conversation mode UI loop. Relaunches with the mic pre-granted so the
+// permission dialog never blocks; scoped to the mode's chrome (enter,
+// state pill, exit) because real speech through the simulator microphone
+// is not deterministic in CI.
+describe('conversation mode', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true, permissions: { microphone: 'YES' } });
+  });
+
+  it('enters hands-free mode from the waveform button', async () => {
+    await waitFor(element(by.text('Fix the flaky parser')))
+      .toBeVisible()
+      .withTimeout(15000);
+    await element(by.id('session-card-s1')).tap();
+    await waitFor(element(by.id('composer-conversation')))
+      .toBeVisible()
+      .withTimeout(10000);
+    await element(by.id('composer-conversation')).tap();
+    await waitFor(element(by.text('Listening…')))
+      .toBeVisible()
+      .withTimeout(10000);
+  });
+
+  it('exits back to the composer', async () => {
+    await element(by.id('conversation-exit')).tap();
+    await waitFor(element(by.id('composer-input')))
+      .toBeVisible()
+      .withTimeout(10000);
+  });
+});

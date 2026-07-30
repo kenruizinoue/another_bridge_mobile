@@ -12,6 +12,11 @@ function ensureConfigured(): void {
   }
 }
 
+/** Auth headers for callers that fetch non-JSON bodies (audio) directly. */
+export function bridgeHeaders(): Record<string, string> {
+  return { 'X-Coder-Key': CODER_KEY, 'ngrok-skip-browser-warning': 'true' };
+}
+
 // Turn a non-OK response into an Error, preferring the bridge's own
 // `detail` string (FastAPI's HTTPException shape) over a bare status.
 async function toError(res: Response): Promise<Error> {

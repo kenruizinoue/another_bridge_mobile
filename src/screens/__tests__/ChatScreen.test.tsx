@@ -115,7 +115,7 @@ it('sends a typed message and shows the streaming reply until done', async () =>
 
   // optimistic user turn + working indicator
   expect(await screen.findByText('run the tests')).toBeOnTheScreen();
-  expect(streamMock).toHaveBeenCalledWith('sid', 'run the tests', expect.anything(), [], []);
+  expect(streamMock).toHaveBeenCalledWith('sid', 'run the tests', expect.anything(), [], [], false);
   expect(screen.getByText(/working on the Mac/)).toBeOnTheScreen();
 
   // chunks arrive → live monospace turn with cursor
@@ -203,6 +203,7 @@ it('restores the draft and the attachments when a send fails to start', async ()
     expect.anything(),
     [{ media_type: 'image/jpeg', data: 'b64-of-pic.png' }],
     [],
+    false,
   );
 
   // …and a failure hands everything back: text, thumbnail, and the error
@@ -255,4 +256,17 @@ it('loads the older page when the inverted list reaches its end', async () => {
   expect(fetchMessagesMock).toHaveBeenLastCalledWith('sid', 3);
   // fully paged → the start marker appears
   expect(screen.getByText('— start of conversation —')).toBeOnTheScreen();
+});
+
+it('the waveform button enters conversation mode and exit restores the composer', async () => {
+  fetchMessagesMock.mockResolvedValue(page([turn(1, 'assistant', 'earlier reply')]));
+  await render(<ChatScreen session={session} onBack={jest.fn()} />);
+  await waitFor(() => expect(fetchMessagesMock).toHaveBeenCalled());
+
+  await fireEvent.press(screen.getByTestId('composer-conversation'));
+  expect(await screen.findByText('Listening…')).toBeOnTheScreen();
+  expect(screen.queryByTestId('composer-input')).toBeNull();
+
+  await fireEvent.press(screen.getByTestId('conversation-exit'));
+  expect(await screen.findByTestId('composer-input')).toBeOnTheScreen();
 });

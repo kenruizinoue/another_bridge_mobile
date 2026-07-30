@@ -130,3 +130,13 @@ it('transcribing shows a busy mic that ignores presses', async () => {
   await fireEvent.press(screen.getByTestId('composer-mic'));
   expect(baseProps.onMicPress).not.toHaveBeenCalled();
 });
+
+it('shows the conversation button only when the screen wires it', async () => {
+  await render(<Composer {...baseProps} />);
+  expect(screen.queryByTestId('composer-conversation')).toBeNull();
+
+  const onConversationPress = jest.fn();
+  await render(<Composer {...baseProps} onConversationPress={onConversationPress} />);
+  await fireEvent.press(screen.getByTestId('composer-conversation'));
+  expect(onConversationPress).toHaveBeenCalled();
+});

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -15,12 +15,16 @@ import type { OutgoingFile, OutgoingImage } from '../api/sessions';
 import type { SessionCard } from '../api/types';
 import ChatStatusBar from '../components/ChatStatusBar';
 import Composer from '../components/Composer';
+import ConversationPill from '../components/ConversationPill';
 import GlassIconButton from '../components/GlassIconButton';
 import StreamingTurn from '../components/StreamingTurn';
 import TurnRow from '../components/TurnRow';
 import useAttachments, { MAX_FILES, MAX_IMAGES } from '../hooks/useAttachments';
 import useChatSession from '../hooks/useChatSession';
+import useVoiceConversation from '../hooks/useVoiceConversation';
 import useVoiceInput from '../hooks/useVoiceInput';
+import { createReplyWatcher } from '../lib/voice/replyWatcher';
+import { VOICE_MODE_SUFFIX } from '../lib/voice/speechReply';
 import { colors, font, mono, space } from '../theme';
 
 // Terminal-style conversation view: full width, no bubbles, monospace,
@@ -46,6 +50,20 @@ export default function ChatScreen({
     onError: setPickError,
   });
 
+  // Hands-free conversation mode: transcripts auto-send as STREAMING
+  // turns (with the marker suffix) so the reply can be read aloud
+  // sentence-by-sentence while it generates. The schema voice flag is
+  // deliberately not used here: its guarantee costs streaming, and the
+  // live reading needs the stream. A failed send hands the text back to
+  // the draft so nothing is lost.
+  const voiceSend = useCallback(
+    (text: string) => {
+      void chat.send(`${text}${VOICE_MODE_SUFFIX}`, [], [], () => setDraft(text));
+    },
+    [chat],
+  );
+  const conversation = useVoiceConversation({ onSend: voiceSend, onError: setPickError });
+
   const handleSend = useCallback(() => {
     const message = draft.trim();
     const out: OutgoingImage[] = images.attachments.map((a) => ({
@@ -70,6 +88,27 @@ export default function ChatScreen({
   }, [draft, images, chat]);
 
   const busy = chat.sending || chat.syncing || chat.queued.length > 0;
+
+  // Live reading: while the reply streams, completed sentences are spoken
+  // as they arrive (the hook skips the end-of-turn summary when this ran).
+  useEffect(() => {
+    if (chat.streamText) conversation.readStream(chat.streamText);
+  }, [chat.streamText, conversation]);
+
+  // Speak a finished reply: the watcher arms while the sent turn runs and
+  // fires exactly once when the chat settles with a new assistant turn.
+  const replyWatcher = useRef(createReplyWatcher());
+  useEffect(() => {
+    const latestAssistant = chat.turns.find((t) => t.role === 'assistant');
+    const speech = replyWatcher.current.update({
+      waiting: conversation.state === 'waitingReply',
+      busy,
+      latestAssistantText: latestAssistant?.text ?? null,
+      toolCount: latestAssistant?.tool_calls ?? 0,
+      schemaSpeech: chat.speech,
+    });
+    if (speech) conversation.notifyReply(speech);
+  }, [conversation, busy, chat.turns, chat.speech]);
 
   // Inverted list → contentOffset.y 0 is the visual bottom. Tracked so the
   // "new reply" pill only shows while reading older turns during a stream.
@@ -164,31 +203,45 @@ export default function ChatScreen({
           streaming={!!chat.streamText}
           sendError={chat.sendError ?? pickError}
         />
-        <Composer
-          draft={draft}
-          onChangeDraft={setDraft}
-          attachments={images.attachments}
-          files={images.files}
-          onPickImages={() => {
-            setPickError(null);
-            void images.pick();
-          }}
-          onPickFiles={() => {
-            setPickError(null);
-            void images.pickFiles();
-          }}
-          onRemoveAttachment={images.remove}
-          onRemoveFile={images.removeFile}
-          canAttachImages={images.attachments.length < MAX_IMAGES}
-          canAttachFiles={images.files.length < MAX_FILES}
-          busy={busy}
-          voiceStatus={voice.status}
-          onMicPress={() => {
-            setPickError(null);
-            voice.toggle();
-          }}
-          onSend={handleSend}
-        />
+        {conversation.active ? (
+          <ConversationPill
+            state={conversation.state}
+            transcript={conversation.transcript}
+            onCancel={conversation.cancel}
+            onInterrupt={conversation.interrupt}
+            onExit={conversation.toggle}
+          />
+        ) : (
+          <Composer
+            draft={draft}
+            onChangeDraft={setDraft}
+            attachments={images.attachments}
+            files={images.files}
+            onPickImages={() => {
+              setPickError(null);
+              void images.pick();
+            }}
+            onPickFiles={() => {
+              setPickError(null);
+              void images.pickFiles();
+            }}
+            onRemoveAttachment={images.remove}
+            onRemoveFile={images.removeFile}
+            canAttachImages={images.attachments.length < MAX_IMAGES}
+            canAttachFiles={images.files.length < MAX_FILES}
+            busy={busy}
+            voiceStatus={voice.status}
+            onMicPress={() => {
+              setPickError(null);
+              voice.toggle();
+            }}
+            onConversationPress={() => {
+              setPickError(null);
+              conversation.toggle();
+            }}
+            onSend={handleSend}
+          />
+        )}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
