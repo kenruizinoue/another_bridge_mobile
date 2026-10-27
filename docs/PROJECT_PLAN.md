@@ -97,7 +97,8 @@ the bundle. After this pass:
 | 22 | Dependency hygiene | Todo |
 | 23 | Final audit and release notes | Todo |
 | 24 | Files view | Done (2026-10-24) |
-| 25 | Terminal tabs, held messages, Send anyway | Done, not installed (2026-10-27) |
+| 25 | Terminal tabs, held messages, Send anyway | Done (2026-10-27) |
+| 26 | PDF viewer in Files | Done (2026-10-27) |
 
 ## Phase 1: no secrets, safe by default
 
@@ -638,6 +639,31 @@ Acceptance criteria:
   expo-clipboard, mocked at the boundary in `jest.setup.js`.
 - Checked by hand once on the iPhone: a reel plays, its cover shows, Save
   to Photos works, and the caption copies.
+
+### Ticket 26 - PDF viewer in Files
+
+Objective:
+
+- PDFs open in place in the Files view (Ken, 2026-10-27: "i want pdf
+  viewer for the files feature"), not only through Share.
+
+TDD work:
+
+- Failing tests: a PDF downloads to the cache and shows from the local
+  copy; a failed download shows why and retries; a web view error offers
+  Retry; a PDF over 100 MB is not downloaded; Share still works; other
+  files still offer Share only.
+- Then `PdfPane` in `FileViewer`, using the existing cached download.
+
+Edge cases:
+
+- The key goes in the download's headers, never in a URL, and the web
+  view may load only the local `file://` copy.
+
+Acceptance criteria:
+
+- react-native-webview added with `npx expo install`; the link check shows
+  0 missing; 313 tests pass. Version 1.7.0.
 
 ## Phase 5: one copy of a session
 

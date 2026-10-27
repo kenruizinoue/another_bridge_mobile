@@ -759,6 +759,24 @@ it('Send anyway releases the held queue and syncs again', async () => {
   await unmount();
 });
 
+it('a queue held by the cap knows which sessions it waits for, without their dates', async () => {
+  fetchMessagesMock.mockResolvedValue(page([]));
+  resumeStatusMock.mockResolvedValue({
+    ...idleStatus,
+    queued: ['install'],
+    queue_count: 1,
+    held: 'limit',
+    held_by: [
+      { session_id: 'a', title: '2026/Oct/22 AnotherSystems Marketing' },
+      { session_id: 'b', title: 'Kodama Marketing' },
+    ],
+  });
+  const { result, unmount } = await renderHook(() => useChatSession('sid'));
+  await waitFor(() => expect(result.current.heldBy).toEqual(['AnotherSystems Marketing', 'Kodama Marketing']));
+  expect(result.current.held).toBe('limit');
+  await unmount();
+});
+
 it('a failed Send anyway shows the error', async () => {
   fetchMessagesMock.mockResolvedValue(page([]));
   releaseQueueMock.mockRejectedValue(new Error('Bridge returned 404.'));

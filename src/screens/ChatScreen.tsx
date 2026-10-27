@@ -23,6 +23,7 @@ import useAttachments, { MAX_FILES, MAX_IMAGES } from '../hooks/useAttachments';
 import useChatSession from '../hooks/useChatSession';
 import useVoiceConversation from '../hooks/useVoiceConversation';
 import useVoiceInput from '../hooks/useVoiceInput';
+import { loadDraft, saveDraft } from '../lib/drafts';
 import { createReplyWatcher } from '../lib/voice/replyWatcher';
 import { VOICE_MODE_SUFFIX } from '../lib/voice/speechReply';
 import { colors, font, mono, space } from '../theme';
@@ -42,6 +43,25 @@ export default function ChatScreen({
 }) {
   const chat = useChatSession(session.session_id);
   const [draft, setDraft] = useState('');
+  // The saved draft loads once; until then nothing is written, so the
+  // empty first render never erases it. Typing before it loads wins.
+  const draftLoaded = useRef(false);
+  useEffect(() => {
+    let alive = true;
+    void loadDraft(session.session_id).then((saved) => {
+      if (!alive) return;
+      draftLoaded.current = true;
+      if (saved) setDraft((current) => current || saved);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [session.session_id]);
+  useEffect(() => {
+    if (!draftLoaded.current) return;
+    const timer = setTimeout(() => void saveDraft(session.session_id, draft), 300);
+    return () => clearTimeout(timer);
+  }, [draft, session.session_id]);
   const [pickError, setPickError] = useState<string | null>(null);
   const images = useAttachments(setPickError);
   const voice = useVoiceInput({
@@ -80,6 +100,7 @@ export default function ChatScreen({
     const sentImages = images.attachments; // to restore on failure
     const sentFiles = images.files;
     setDraft('');
+    void saveDraft(session.session_id, '');
     images.clear();
     setPickError(null);
     void chat.send(message, out, outFiles, () => {
@@ -87,7 +108,7 @@ export default function ChatScreen({
       setDraft(message);
       images.restore(sentImages, sentFiles);
     });
-  }, [draft, images, chat]);
+  }, [draft, images, chat, session.session_id]);
 
   const busy = chat.sending || chat.syncing || chat.queued.length > 0;
 
@@ -120,10 +141,15 @@ export default function ChatScreen({
 
   return (
     <SafeAreaView style={styles.screen}>
+      {/* The title gets the full width on its own row; the buttons share
+          the row below with the folder and message count. */}
+      <Text style={styles.headerTitle} numberOfLines={2} testID="chat-title">
+        {session.title}
+      </Text>
       <View style={styles.header}>
         <GlassIconButton name="chevron-back" onPress={onBack} size={40} testID="chat-back" label="Back" />
-        <Text style={styles.headerTitle} numberOfLines={1}>
-          {session.title}
+        <Text style={styles.subheader} numberOfLines={1} ellipsizeMode="head">
+          {session.project} · {session.message_count} msgs
         </Text>
         <GlassIconButton
           name="refresh"
@@ -144,9 +170,6 @@ export default function ChatScreen({
           />
         ) : null}
       </View>
-      <Text style={styles.subheader} numberOfLines={1} ellipsizeMode="head">
-        {session.project} · {session.message_count} msgs
-      </Text>
 
       {chat.loading ? (
         <View style={styles.center}>
@@ -217,6 +240,7 @@ export default function ChatScreen({
           streaming={!!chat.streamText}
           sendError={chat.sendError ?? pickError}
           held={chat.held}
+          heldBy={chat.heldBy}
           terminal={chat.terminal}
           onSendAnyway={chat.sendAnyway}
         />
@@ -266,23 +290,24 @@ export default function ChatScreen({
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
+  headerTitle: {
+    color: colors.textPrimary,
+    fontSize: font.title,
+    fontWeight: '600',
+    paddingHorizontal: space.md,
+    paddingTop: space.xs,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.sm,
     paddingHorizontal: space.md,
     paddingTop: space.xs,
-  },
-  headerTitle: { color: colors.textPrimary, fontSize: font.title, fontWeight: '600', flex: 1 },
-  subheader: {
-    color: colors.textFaint,
-    fontSize: font.tiny,
-    fontFamily: mono,
-    paddingHorizontal: space.md,
     paddingBottom: space.sm,
     borderBottomWidth: 1,
     borderBottomColor: colors.divider,
   },
+  subheader: { flex: 1, color: colors.textFaint, fontSize: font.tiny, fontFamily: mono },
   listWrap: { flex: 1 },
   listContent: { paddingHorizontal: space.md, paddingVertical: space.md },
   jumpPill: {

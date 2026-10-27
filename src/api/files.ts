@@ -5,6 +5,8 @@ import { apiGet, BRIDGE_URL, bridgeHeaders } from './client';
 
 // Text previews stop here; bigger files open through the share sheet.
 export const MAX_TEXT_PREVIEW_BYTES = 1024 * 1024;
+// PDFs are downloaded to the cache before they show, so cap them too.
+export const MAX_PDF_PREVIEW_BYTES = 100 * 1024 * 1024;
 
 export type FileKind = 'dir' | 'video' | 'image' | 'audio' | 'pdf' | 'text' | 'other';
 

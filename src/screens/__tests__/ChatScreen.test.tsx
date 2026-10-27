@@ -1,7 +1,8 @@
 // Screen-level integration: real ChatScreen + real hooks + real
 // components, mocked only at the API seam. Drives a full send round-trip
 // through the composer UI.
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import ChatScreen from '../ChatScreen';
 import {
   fetchMessages,
@@ -64,8 +65,9 @@ const page = (messages: Turn[]): MessagesPage => ({
   next_before: null,
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   jest.clearAllMocks();
+  await AsyncStorage.clear();
   // the + button opens an iOS action sheet; auto-pick "Photo Library"
   jest
     .spyOn(require('react-native').ActionSheetIOS, 'showActionSheetWithOptions')
@@ -88,6 +90,47 @@ it('renders the transcript and the start-of-conversation marker', async () => {
   expect(await screen.findByText('sure thing')).toBeOnTheScreen();
   expect(screen.getByText('help me')).toBeOnTheScreen();
   expect(screen.getByText('— start of conversation —')).toBeOnTheScreen();
+});
+
+it('shows the title on its own row above the back button and the folder line', async () => {
+  fetchMessagesMock.mockResolvedValue(page([]));
+  await render(<ChatScreen session={session} onBack={jest.fn()} />);
+  await waitFor(() => expect(fetchMessagesMock).toHaveBeenCalled());
+
+  expect(screen.getByTestId('chat-title')).toHaveTextContent('A session');
+  expect(screen.getByText('repo · 2 msgs')).toBeOnTheScreen();
+});
+
+it('keeps an unsent draft per session and clears it on send', async () => {
+  jest.useFakeTimers();
+  try {
+    fetchMessagesMock.mockResolvedValue(page([]));
+    streamMock.mockReturnValue(() => {});
+    const first = await render(<ChatScreen session={session} onBack={jest.fn()} />);
+    await fireEvent.changeText(screen.getByTestId('composer-input'), 'half written');
+    await act(async () => {
+      jest.advanceTimersByTime(400);
+    });
+    expect(await AsyncStorage.getItem('draft:sid')).toBe('half written');
+    await first.unmount();
+
+    // Another session starts empty; its own draft key is untouched.
+    await render(<ChatScreen session={{ ...session, session_id: 'other' }} onBack={jest.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('composer-input').props.value).toBe(''));
+    expect(await AsyncStorage.getItem('draft:other')).toBeNull();
+    await screen.unmount();
+
+    // Reopening (or a new install) brings the draft back; sending clears it.
+    await render(<ChatScreen session={session} onBack={jest.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('composer-input').props.value).toBe('half written'));
+    await fireEvent.press(screen.getByTestId('composer-send'));
+    await act(async () => {
+      jest.advanceTimersByTime(400);
+    });
+    expect(await AsyncStorage.getItem('draft:sid')).toBeNull();
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 it('calls onBack from the header back button', async () => {

@@ -4,6 +4,45 @@ All notable changes to this project are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.1] - 2026-10-27
+
+### Added
+
+- Unsent text in the composer is saved per session on the phone, so
+  leaving the chat, closing the app or installing a new build keeps it.
+  Sending clears it. Each session has its own draft.
+
+### Changed
+
+- The chat title has its own row at the top, up to 2 lines. The back,
+  refresh and Files buttons sit on the row below it, with the folder and
+  message count between them.
+
+### Fixed
+
+- Chats Ken had just used in a terminal tab (even a /compact or
+  /sync-mobile) showed the queue for 2 minutes after that turn ended, so
+  the queue seemed to follow him from chat to chat. The bridge now holds a
+  finished terminal turn's session for 20 seconds, not 120. Needs the
+  matching another_bridge change.
+
+## [1.7.0] - 2026-10-27
+
+### Added
+
+- PDFs open in the Files view instead of only through Share: the app
+  downloads the file (key in headers, never in a URL) and iOS shows it,
+  with scrolling and pinch to zoom. Retry on a failed download, and PDFs
+  over 100 MB still go through Share. New native module:
+  react-native-webview 13.16.1.
+
+### Changed
+
+- A message held by the bridge's turn cap names the sessions it waits
+  for ("1 queued, waiting for AnotherSystems Marketing to finish…")
+  instead of "other phone turns are running", which read as if nothing
+  was there. The bridge's cap went from 2 to 3 at the same time.
+
 ## [1.6.0] - 2026-10-27
 
 ### Added

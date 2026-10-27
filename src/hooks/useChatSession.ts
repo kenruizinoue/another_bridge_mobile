@@ -23,6 +23,10 @@ import type { MessagesPage, TerminalInfo, ToolRef, Turn } from '../api/types';
 // catch-up: fast, then ease off, never slower than 15 s.
 const CATCH_UP_INTERVALS_MS = [3000, 5000, 10000, 15000];
 
+// "2026/Oct/22 AnotherSystems Marketing" -> "AnotherSystems Marketing"
+const titlesOf = (s: ResumeStatus): string[] =>
+  (s.held_by ?? []).map((h) => h.title.replace(/^\d{4}\/\w{3}\/\d{1,2}\s+/, ''));
+
 export default function useChatSession(sessionId: string) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [nextBefore, setNextBefore] = useState<number | null>(null);
@@ -48,6 +52,7 @@ export default function useChatSession(sessionId: string) {
   // works, the bridge holds phone messages instead of starting a second
   // copy of the session, and catch-up keeps showing the tab's replies.
   const [held, setHeld] = useState<HoldReason | null>(null);
+  const [heldBy, setHeldBy] = useState<string[]>([]); // titles of those sessions
   const [terminal, setTerminal] = useState<TerminalInfo | null>(null);
   // Voice turns only: the schema-guaranteed spoken summary of the last
   // finished reply (null otherwise / until it lands).
@@ -212,6 +217,7 @@ export default function useChatSession(sessionId: string) {
           if (mounted.current) {
             setQueued(s.queued);
             setHeld(s.held ?? null);
+            setHeldBy(titlesOf(s));
             setTerminal(s.terminal ?? null);
           }
         } catch {
@@ -227,6 +233,7 @@ export default function useChatSession(sessionId: string) {
         applyPage(page);
         setQueued(status.queued);
         setHeld(status.held ?? null);
+        setHeldBy(titlesOf(status));
         setTerminal(status.terminal ?? null);
         setSendError(null);
         setOffline(false);
@@ -469,6 +476,7 @@ export default function useChatSession(sessionId: string) {
           inFlight.current = true;
           setQueued(status.queued);
           setHeld(status.held ?? null);
+          setHeldBy(titlesOf(status));
           void catchUp();
         } else if (status.terminal?.active) {
           void catchUp(); // follow the terminal tab's replies
@@ -501,6 +509,7 @@ export default function useChatSession(sessionId: string) {
     offline,
     queued,
     held,
+    heldBy,
     terminal,
     sendAnyway,
     streamText,

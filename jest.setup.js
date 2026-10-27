@@ -24,6 +24,12 @@ jest.mock('expo-video', () => {
     VideoView: (props) => require('react').createElement(View, { testID: props.testID }),
   };
 });
+jest.mock('react-native-webview', () => {
+  const { View } = require('react-native');
+  return {
+    WebView: (props) => require('react').createElement(View, { testID: props.testID, source: props.source, onError: props.onError }),
+  };
+});
 jest.mock('expo-media-library', () => ({
   requestPermissionsAsync: jest.fn(async () => ({ granted: true })),
   Asset: { create: jest.fn(async () => ({ id: 'asset' })) },

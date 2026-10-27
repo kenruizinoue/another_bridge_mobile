@@ -74,6 +74,22 @@ it('a queue held by the turn cap says other phone turns are running', async () =
   expect(screen.getByTestId('send-anyway')).toBeOnTheScreen();
 });
 
+it('a queue held by the cap names the sessions it waits for', async () => {
+  await render(
+    <ChatStatusBar
+      {...base}
+      syncing
+      queued={['install']}
+      held="limit"
+      heldBy={['AnotherSystems Marketing', 'AnotherSystems Marketing2']}
+      onSendAnyway={jest.fn()}
+    />,
+  );
+  expect(
+    screen.getByText('1 queued, waiting for AnotherSystems Marketing and AnotherSystems Marketing2 to finish…'),
+  ).toBeOnTheScreen();
+});
+
 it('no Send anyway for a queue that just waits for the turn ahead', async () => {
   await render(<ChatStatusBar {...base} syncing queued={['next']} onSendAnyway={jest.fn()} />);
   expect(screen.queryByTestId('send-anyway')).toBeNull();

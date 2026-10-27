@@ -13,6 +13,7 @@ export function workingLabel({
   streaming,
   offline,
   held = null,
+  heldBy = [],
 }: {
   queued: number;
   sending: boolean;
@@ -20,6 +21,7 @@ export function workingLabel({
   streaming: boolean;
   offline: boolean;
   held?: HoldReason | null;
+  heldBy?: string[];
 }): string {
   if (offline) return 'reconnecting to the Mac…';
   if (streaming) return 'streaming…';
@@ -27,10 +29,19 @@ export function workingLabel({
   // terminal tab to finish, or for a free slot under the bridge's cap.
   if (queued > 0 && !sending && !live) {
     if (held === 'terminal') return `${queued} queued until the Mac terminal is done…`;
-    if (held === 'limit') return `${queued} queued, other phone turns are running…`;
+    if (held === 'limit') {
+      return heldBy.length > 0
+        ? `${queued} queued, waiting for ${joinNames(heldBy)} to finish…`
+        : `${queued} queued, other phone turns are running…`;
+    }
     return `${queued} queued, waiting to start…`;
   }
   return 'claude is working on the Mac…';
+}
+
+// "A", "A and B", "A, B and C"
+function joinNames(names: string[]): string {
+  return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
 // "working in the Mac terminal, 2 agents running"
@@ -48,6 +59,7 @@ export default function ChatStatusBar({
   streaming,
   sendError,
   held = null,
+  heldBy = [],
   terminal = null,
   onSendAnyway,
 }: {
@@ -59,6 +71,7 @@ export default function ChatStatusBar({
   streaming: boolean;
   sendError: string | null;
   held?: HoldReason | null;
+  heldBy?: string[];
   terminal?: TerminalInfo | null;
   onSendAnyway?: () => void;
 }) {
@@ -81,7 +94,7 @@ export default function ChatStatusBar({
         <View style={styles.bar}>
           <ActivityIndicator size="small" color={colors.accent} />
           <Text style={styles.workingText}>
-            {workingLabel({ queued: queued.length, sending, live, streaming, offline, held })}
+            {workingLabel({ queued: queued.length, sending, live, streaming, offline, held, heldBy })}
           </Text>
           {waiting && onSendAnyway ? (
             <Pressable

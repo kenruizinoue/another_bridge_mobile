@@ -21,6 +21,9 @@ export type ResumeStatus = {
   queued: string[]; // messages waiting to run, in order
   queue_count: number;
   held?: HoldReason | null; // missing on older bridges
+  // For "limit": the other sessions holding the slots, so the bar can name
+  // them instead of a vague "other turns".
+  held_by?: { session_id: string; title: string }[];
   terminal?: TerminalInfo | null;
 };
 

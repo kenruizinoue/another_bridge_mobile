@@ -2,18 +2,26 @@ import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import { fetchText, fileSource, formatSize, MAX_TEXT_PREVIEW_BYTES, type FileEntry } from '../api/files';
+import { WebView } from 'react-native-webview';
+import {
+  fetchText,
+  fileSource,
+  formatSize,
+  MAX_PDF_PREVIEW_BYTES,
+  MAX_TEXT_PREVIEW_BYTES,
+  type FileEntry,
+} from '../api/files';
 import * as actions from '../lib/files/fileActions';
 import { colors, font, mono, space } from '../theme';
 import Markdown from './Markdown';
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
-export type FileActions = Pick<typeof actions, 'saveToPhotos' | 'shareFile' | 'copyText'>;
+export type FileActions = Pick<typeof actions, 'saveToPhotos' | 'shareFile' | 'copyText' | 'downloadToCache'>;
 
-// Shows one file from a shared folder: videos play, images and text show
-// in place, and anything else opens through the share sheet. The action
-// bar saves to Photos, shares, or copies text (like a post caption).
+// Shows one file from a shared folder: videos play, images, text and PDFs
+// show in place, and anything else opens through the share sheet. The
+// action bar saves to Photos, shares, or copies text (like a post caption).
 export default function FileViewer({
   root,
   entry,
@@ -60,9 +68,11 @@ export default function FileViewer({
           />
         ) : isText ? (
           <TextPane root={root} entry={entry} loadText={loadText} onText={setText} />
+        ) : entry.kind === 'pdf' ? (
+          <PdfPane root={root} entry={entry} download={fileActions.downloadToCache} />
         ) : (
           <View style={styles.center}>
-            <Ionicons name={entry.kind === 'pdf' ? 'document-attach-outline' : 'document-outline'} size={48} color={colors.tool} />
+            <Ionicons name="document-outline" size={48} color={colors.tool} />
             <Text style={styles.name}>{entry.name}</Text>
             {entry.size != null ? <Text style={styles.dim}>{formatSize(entry.size)}</Text> : null}
             <Text style={styles.dim}>Open it with Share to preview or save it.</Text>
@@ -192,6 +202,72 @@ function TextPane({
   );
 }
 
+// A PDF, downloaded to the cache with the key in headers (never in a URL),
+// then shown by iOS's own PDF view inside a web view: scroll and pinch to
+// zoom. Only the local file may load; anything else is refused.
+function PdfPane({
+  root,
+  entry,
+  download,
+}: {
+  root: string;
+  entry: FileEntry;
+  download: FileActions['downloadToCache'];
+}) {
+  const [uri, setUri] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const tooBig = entry.size != null && entry.size > MAX_PDF_PREVIEW_BYTES;
+
+  useEffect(() => {
+    if (tooBig) return;
+    let alive = true;
+    setUri(null);
+    setError(null);
+    download(root, entry)
+      .then((file) => alive && setUri(file.uri))
+      .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
+    return () => {
+      alive = false;
+    };
+  }, [root, entry, download, tooBig, attempt]);
+
+  if (tooBig) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.dim}>This PDF is {formatSize(entry.size)}, too big to preview. Use Share.</Text>
+      </View>
+    );
+  }
+  if (error) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.error}>{error}</Text>
+        <Pressable testID="pdf-retry" accessibilityRole="button" onPress={() => setAttempt((n) => n + 1)} style={styles.retry}>
+          <Text style={styles.retryText}>Retry</Text>
+        </Pressable>
+      </View>
+    );
+  }
+  if (uri == null) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator color={colors.accent} />
+        <Text style={styles.dim}>Loading {entry.name}…</Text>
+      </View>
+    );
+  }
+  return (
+    <WebView
+      testID="file-pdf"
+      source={{ uri }}
+      originWhitelist={['file://*']}
+      style={styles.pdf}
+      onError={(e) => setError(e.nativeEvent.description || 'Couldn’t show this PDF. Use Share.')}
+    />
+  );
+}
+
 function ActionButton({
   icon,
   label,
@@ -232,6 +308,16 @@ const styles = StyleSheet.create({
   dim: { color: colors.textDim, fontSize: font.meta, textAlign: 'center' },
   error: { color: colors.error, fontSize: font.meta, textAlign: 'center' },
   textScroll: { flex: 1, backgroundColor: colors.bg },
+  pdf: { flex: 1, backgroundColor: colors.bg },
+  retry: {
+    marginTop: space.sm,
+    paddingHorizontal: space.xl,
+    paddingVertical: space.sm,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(94,177,255,0.35)',
+  },
+  retryText: { color: colors.accent, fontSize: font.meta, fontFamily: mono },
   textContent: { padding: space.lg },
   text: { color: colors.textBody, fontSize: font.body, fontFamily: mono, lineHeight: 20 },
   note: {
