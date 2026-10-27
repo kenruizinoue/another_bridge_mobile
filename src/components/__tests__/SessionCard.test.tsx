@@ -40,3 +40,16 @@ it('fires onPress with the full card', async () => {
   await fireEvent.press(screen.getByTestId('session-card-s1'));
   expect(onPress).toHaveBeenCalledWith(c);
 });
+
+it('shows when the session is working in a terminal tab, with its agents', async () => {
+  const terminal = { open: true, busy: false, active: true, agents: 1 };
+  await render(<SessionCard card={card({ terminal })} onPress={jest.fn()} />);
+  expect(screen.getByText('working in the Mac terminal, 1 agent running')).toBeOnTheScreen();
+});
+
+it('no terminal line when the tab is quiet or the bridge is older', async () => {
+  await render(<SessionCard card={card({ terminal: { open: true, busy: false, active: false, agents: 0 } })} />);
+  expect(screen.queryByTestId('session-terminal-s1')).toBeNull();
+  await render(<SessionCard card={card()} />);
+  expect(screen.queryByTestId('session-terminal-s1')).toBeNull();
+});

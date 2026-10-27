@@ -7,7 +7,13 @@ import ToolLines from './ToolLines';
 // One conversation turn. Claude's replies are markdown (rendered); the
 // user's turns are shown literally (what they typed, verbatim). Tool
 // steps render as detail lines instead of a bare count.
-export default function TurnRow({ turn }: { turn: Turn }) {
+export default function TurnRow({
+  turn,
+  onPathPress,
+}: {
+  turn: Turn;
+  onPathPress?: (path: string) => void; // a file path in a reply was tapped
+}) {
   if (turn.role === 'tool') {
     return (
       <View style={styles.turn}>
@@ -32,7 +38,7 @@ export default function TurnRow({ turn }: { turn: Turn }) {
           {turn.text}
         </Text>
       ) : (
-        <Markdown content={turn.text ?? ''} />
+        <Markdown content={turn.text ?? ''} onPathPress={onPathPress} />
       )}
 
       {turn.tools.length ? (

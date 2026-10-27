@@ -2,13 +2,14 @@
   "expo": {
     "name": "another_bridge_mobile",
     "slug": "another_bridge_mobile",
-    "version": "1.3.0",
+    "version": "1.6.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.kenruizinoue.anotherbridgemobile"
+      "bundleIdentifier": "com.kenruizinoue.anotherbridgemobile",
+      "appleTeamId": "J85PQ69AN8"
     },
     "android": {
       "adaptiveIcon": {
@@ -35,6 +36,14 @@
           "microphonePermission": "Record your voice to dictate a message into the composer."
         }
       ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Attach images from your library to a Claude Code session.",
+          "savePhotosPermission": "Save videos and images from your Mac to Photos."
+        }
+      ],
+      "expo-video",
       [
         "expo-speech-recognition",
         {

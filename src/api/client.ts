@@ -68,17 +68,27 @@ export function apiPost<T>(path: string, body: unknown): Promise<T> {
   });
 }
 
-// Streaming POST that parses Server-Sent Events incrementally. RN's
+// Streaming request that parses Server-Sent Events incrementally. RN's
 // default fetch buffers the whole body, so we use XMLHttpRequest, whose
-// `onprogress` delivers `responseText` as chunks arrive — reliable on
+// `onprogress` delivers `responseText` as chunks arrive: reliable on
 // both platforms and dependency-free (no expo/fetch, no TextDecoder).
-// `onEvent(type, data)` fires per SSE frame; `onEnd(err?)` fires once at
-// completion (err set on transport/status failure). Returns a cancel fn.
+// POSTs `body` as JSON, or GETs when `body` is undefined.
+// `onEvent(type, data)` fires per SSE frame; `onEnd(err?, status?)` fires
+// once at completion. `err` is set only when the bridge never accepted
+// the request (unreachable, HTTP error with its status). A connection
+// that drops after the bridge answered ends WITHOUT an error: the turn is
+// still running on the Mac. So does a stream silent for `idleMs` (the
+// bridge sends a keepalive every 10 s, so silence means a dead socket,
+// e.g. after iOS froze the app). Returns a cancel fn; a cancelled stream
+// reports nothing.
+export const STREAM_IDLE_MS = 60_000;
+
 export function streamSSE(
   path: string,
   body: unknown,
   onEvent: (event: string, data: any) => void,
-  onEnd: (err?: string) => void,
+  onEnd: (err?: string, status?: number) => void,
+  idleMs: number = STREAM_IDLE_MS,
 ): () => void {
   if (!CODER_KEY || CODER_KEY.startsWith('replace-with')) {
     onEnd('Set EXPO_PUBLIC_CODER_KEY in .env.local, then restart Expo.');
@@ -86,27 +96,53 @@ export function streamSSE(
   }
 
   const xhr = new XMLHttpRequest();
-  xhr.open('POST', `${BRIDGE_URL}${path}`);
+  xhr.open(body === undefined ? 'GET' : 'POST', `${BRIDGE_URL}${path}`);
   xhr.setRequestHeader('X-Coder-Key', CODER_KEY);
-  xhr.setRequestHeader('Content-Type', 'application/json');
+  if (body !== undefined) xhr.setRequestHeader('Content-Type', 'application/json');
   xhr.setRequestHeader('ngrok-skip-browser-warning', 'true');
 
   let seen = 0; // chars of responseText already consumed
   let buffer = '';
   let ended = false;
-  const end = (err?: string) => {
+  let accepted = false; // the bridge answered 2xx
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const clearIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = null;
+  };
+  const end = (err?: string, status?: number) => {
+    clearIdle();
     if (!ended) {
       ended = true;
-      onEnd(err);
+      onEnd(err, status);
     }
+  };
+  const armIdle = () => {
+    if (!idleMs || ended) return;
+    clearIdle();
+    idleTimer = setTimeout(() => {
+      try {
+        xhr.abort();
+      } catch {
+        // already finished
+      }
+      end(accepted ? undefined : `No answer from the bridge at ${BRIDGE_URL}.`);
+    }, idleMs);
+  };
+  const markAccepted = () => {
+    if (xhr.status >= 200 && xhr.status < 300) accepted = true;
   };
 
   const pump = () => {
+    if (ended) return;
+    markAccepted();
+    armIdle();
     const text = xhr.responseText || '';
     buffer += text.slice(seen);
     seen = text.length;
     let sep: number;
-    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+    while (!ended && (sep = buffer.indexOf('\n\n')) !== -1) {
       const frame = buffer.slice(0, sep);
       buffer = buffer.slice(sep + 2);
       let ev = 'message';
@@ -124,19 +160,25 @@ export function streamSSE(
     }
   };
 
+  xhr.onreadystatechange = () => {
+    if (xhr.readyState >= 2) markAccepted(); // headers in: the bridge took it
+  };
   xhr.onprogress = pump;
   xhr.onload = () => {
     if (xhr.status >= 400) {
-      end(xhr.status === 401 ? '401 Unauthorized — key mismatch.' : `Bridge returned ${xhr.status}.`);
+      end(xhr.status === 401 ? '401 Unauthorized, key mismatch.' : `Bridge returned ${xhr.status}.`, xhr.status);
       return;
     }
     pump();
     end();
   };
-  xhr.onerror = () => end(`Can't reach the bridge at ${BRIDGE_URL}. Is it running?`);
-  xhr.send(JSON.stringify(body));
+  xhr.onerror = () => end(accepted ? undefined : `Can't reach the bridge at ${BRIDGE_URL}. Is it running?`);
+  xhr.send(body === undefined ? null : JSON.stringify(body));
+  armIdle();
 
   return () => {
+    ended = true;
+    clearIdle();
     try {
       xhr.abort();
     } catch {

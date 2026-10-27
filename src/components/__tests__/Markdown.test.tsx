@@ -1,6 +1,6 @@
 // The parser is unit-tested in lib/__tests__/markdown.test.ts; these pin
 // the AST → RN mapping: markers, code verbatimness, and inline splitting.
-import { render, screen } from '@testing-library/react-native';
+import { fireEvent, render, screen } from '@testing-library/react-native';
 import Markdown from '../Markdown';
 
 it('renders headings, paragraphs, and both list markers', async () => {
@@ -42,4 +42,19 @@ it('renders every heading level with a distinct size', async () => {
   // h1 > h2 > h3 sizes from the theme all appear in the tree
   const json = JSON.stringify(screen.toJSON());
   for (const px of [20, 17, 15]) expect(json).toContain(`"fontSize":${px}`);
+});
+
+it('turns file paths into links only when a handler is given', async () => {
+  const onPathPress = jest.fn();
+  const text = 'Done. Video at `~/agent_outputs/a/gpt.mp4` and cover ~/agent_outputs/a/cover.png.';
+  await render(<Markdown content={text} onPathPress={onPathPress} />);
+  await fireEvent.press(screen.getByTestId('path-link-~/agent_outputs/a/gpt.mp4'));
+  expect(onPathPress).toHaveBeenCalledWith('~/agent_outputs/a/gpt.mp4');
+  await fireEvent.press(screen.getByTestId('path-link-~/agent_outputs/a/cover.png'));
+  expect(onPathPress).toHaveBeenLastCalledWith('~/agent_outputs/a/cover.png');
+});
+
+it('leaves paths as plain text without a handler', async () => {
+  await render(<Markdown content={'See ~/agent_outputs/a/gpt.mp4'} />);
+  expect(screen.queryByTestId('path-link-~/agent_outputs/a/gpt.mp4')).toBeNull();
 });

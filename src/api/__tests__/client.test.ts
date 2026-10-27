@@ -154,7 +154,7 @@ describe('streamSSE', () => {
       ['text', { chunk: 'hi' }],
       ['done', {}],
     ]);
-    expect(onEnd).toHaveBeenCalledWith(undefined);
+    expect(onEnd).toHaveBeenCalledWith(undefined, undefined);
     expect(onEnd).toHaveBeenCalledTimes(1);
   });
 
@@ -173,7 +173,7 @@ describe('streamSSE', () => {
     const onEnd = jest.fn();
     client.streamSSE('/s', {}, jest.fn(), onEnd);
     FakeXHR.instances[0].finish(401);
-    expect(onEnd).toHaveBeenCalledWith(expect.stringMatching(/401/));
+    expect(onEnd).toHaveBeenCalledWith(expect.stringMatching(/401/), 401);
   });
 
   it('fails fast without a key and never opens a request', () => {
@@ -186,8 +186,59 @@ describe('streamSSE', () => {
 
   it('returns a cancel function that aborts the request', () => {
     const client = loadClient({ key: 'k1' });
-    const cancel = client.streamSSE('/s', {}, jest.fn(), jest.fn());
+    const onEnd = jest.fn();
+    const cancel = client.streamSSE('/s', {}, jest.fn(), onEnd);
     cancel();
     expect(FakeXHR.instances[0].aborted).toBe(true);
+    FakeXHR.instances[0].onerror?.(); // late callbacks report nothing
+    expect(onEnd).not.toHaveBeenCalled();
+  });
+
+  it('GETs without a body or content type when body is undefined', () => {
+    const client = loadClient({ key: 'k1' });
+    const cancel = client.streamSSE('/attach', undefined, jest.fn(), jest.fn());
+    const xhr = FakeXHR.instances[0];
+    expect(xhr.method).toBe('GET');
+    expect(xhr.sentBody).toBeNull();
+    expect(xhr.headers['Content-Type']).toBeUndefined();
+    cancel();
+  });
+
+  it('a drop after the bridge answered is an interruption, not an error', () => {
+    const client = loadClient({ key: 'k1' });
+    const onEnd = jest.fn();
+    client.streamSSE('/s', {}, jest.fn(), onEnd);
+    const xhr = FakeXHR.instances[0];
+    xhr.push(': keepalive\n\n'); // the bridge took the request
+    xhr.onerror?.(); // then iOS killed the socket
+    expect(onEnd).toHaveBeenCalledWith(undefined, undefined);
+  });
+
+  it('a failure before the bridge answered is an error', () => {
+    const client = loadClient({ key: 'k1' });
+    const onEnd = jest.fn();
+    client.streamSSE('/s', {}, jest.fn(), onEnd);
+    FakeXHR.instances[0].status = 0;
+    FakeXHR.instances[0].onerror?.();
+    expect(onEnd).toHaveBeenCalledWith(expect.stringMatching(/reach the bridge/), undefined);
+  });
+
+  it('a stream silent past the idle limit is aborted and reported as dropped', () => {
+    jest.useFakeTimers();
+    try {
+      const client = loadClient({ key: 'k1' });
+      const onEnd = jest.fn();
+      client.streamSSE('/s', {}, jest.fn(), onEnd, 60_000);
+      const xhr = FakeXHR.instances[0];
+      jest.advanceTimersByTime(50_000);
+      xhr.push(': keepalive\n\n'); // activity re-arms the watchdog
+      jest.advanceTimersByTime(50_000);
+      expect(onEnd).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(10_000);
+      expect(xhr.aborted).toBe(true);
+      expect(onEnd).toHaveBeenCalledWith(undefined, undefined);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

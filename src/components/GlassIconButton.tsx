@@ -15,6 +15,7 @@ export default function GlassIconButton({
   filled = false,
   size = 40,
   testID,
+  label,
 }: {
   name: IoniconName;
   onPress?: () => void;
@@ -23,11 +24,14 @@ export default function GlassIconButton({
   filled?: boolean;
   size?: number;
   testID?: string;
+  label?: string; // VoiceOver label
 }) {
   const iconColor = filled ? '#06121d' : disabled ? colors.textDim : colors.accent;
   return (
     <Pressable
       testID={testID}
+      accessibilityRole="button"
+      accessibilityLabel={label}
       onPress={onPress}
       disabled={disabled || busy}
       hitSlop={8}

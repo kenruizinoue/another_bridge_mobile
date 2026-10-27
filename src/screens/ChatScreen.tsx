@@ -34,9 +34,11 @@ import { colors, font, mono, space } from '../theme';
 export default function ChatScreen({
   session,
   onBack,
+  onOpenFiles,
 }: {
   session: SessionCard;
   onBack: () => void;
+  onOpenFiles?: (path?: string | null) => void;
 }) {
   const chat = useChatSession(session.session_id);
   const [draft, setDraft] = useState('');
@@ -114,12 +116,12 @@ export default function ChatScreen({
   // "new reply" pill only shows while reading older turns during a stream.
   const listRef = useRef<FlatList>(null);
   const [awayFromBottom, setAwayFromBottom] = useState(false);
-  const showJumpPill = awayFromBottom && chat.sending;
+  const showJumpPill = awayFromBottom && (chat.sending || chat.live);
 
   return (
     <SafeAreaView style={styles.screen}>
       <View style={styles.header}>
-        <GlassIconButton name="chevron-back" onPress={onBack} size={40} testID="chat-back" />
+        <GlassIconButton name="chevron-back" onPress={onBack} size={40} testID="chat-back" label="Back" />
         <Text style={styles.headerTitle} numberOfLines={1}>
           {session.title}
         </Text>
@@ -130,7 +132,17 @@ export default function ChatScreen({
           busy={chat.refreshing}
           size={40}
           testID="chat-refresh"
+          label="Refresh"
         />
+        {onOpenFiles ? (
+          <GlassIconButton
+            name="folder-outline"
+            onPress={() => onOpenFiles(null)}
+            size={40}
+            testID="chat-files"
+            label="Files"
+          />
+        ) : null}
       </View>
       <Text style={styles.subheader} numberOfLines={1} ellipsizeMode="head">
         {session.project} · {session.message_count} msgs
@@ -154,7 +166,7 @@ export default function ChatScreen({
             data={chat.turns}
             inverted
             keyExtractor={(t) => String(t.index)}
-            renderItem={({ item }) => <TurnRow turn={item} />}
+            renderItem={({ item }) => <TurnRow turn={item} onPathPress={onOpenFiles} />}
             contentContainerStyle={styles.listContent}
             // Anchor the first visible row so a growing stream below never
             // drags the reader; within 80px of the bottom it auto-follows.
@@ -168,7 +180,7 @@ export default function ChatScreen({
             // the just-sent user turn, which is exactly where the live reply
             // should stream in.
             ListHeaderComponent={
-              chat.sending ? (
+              chat.sending || chat.live ? (
                 <StreamingTurn text={chat.streamText} tools={chat.streamTools} />
               ) : null
             }
@@ -200,8 +212,13 @@ export default function ChatScreen({
           queued={chat.queued}
           sending={chat.sending}
           syncing={chat.syncing}
+          live={chat.live}
+          offline={chat.offline}
           streaming={!!chat.streamText}
           sendError={chat.sendError ?? pickError}
+          held={chat.held}
+          terminal={chat.terminal}
+          onSendAnyway={chat.sendAnyway}
         />
         {conversation.active ? (
           <ConversationPill

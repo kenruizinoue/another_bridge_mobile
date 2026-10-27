@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { AppState } from 'react-native';
 import SessionListScreen from '../SessionListScreen';
 import { fetchSessions } from '../../api/sessions';
 import type { SessionCard } from '../../api/types';
@@ -61,4 +62,59 @@ it('pull-to-refresh reloads the list in place', async () => {
 
   expect(await screen.findByText('Just created')).toBeOnTheScreen();
   expect(screen.getByText('2')).toBeOnTheScreen(); // header count updated
+});
+
+it('the error screen can be pulled down to retry', async () => {
+  fetchSessionsMock.mockRejectedValue(new Error('Can’t reach the bridge at http://x.'));
+  await render(<SessionListScreen onOpen={jest.fn()} />);
+  await screen.findByText('Couldn’t load');
+
+  fetchSessionsMock.mockResolvedValue([card('a', 'Back online')]);
+  const refreshControl = screen.getByTestId('session-error').props.refreshControl;
+  await waitFor(async () => refreshControl.props.onRefresh());
+
+  expect(await screen.findByText('Back online')).toBeOnTheScreen();
+  expect(screen.queryByText('Couldn’t load')).toBeNull();
+});
+
+it('the Retry button reloads, and a failed retry keeps the error', async () => {
+  fetchSessionsMock.mockRejectedValue(new Error('Can’t reach the bridge at http://x.'));
+  await render(<SessionListScreen onOpen={jest.fn()} />);
+  await fireEvent.press(await screen.findByTestId('sessions-retry'));
+  await waitFor(() => expect(fetchSessionsMock).toHaveBeenCalledTimes(2));
+  expect(screen.getByText('Couldn’t load')).toBeOnTheScreen();
+  expect(screen.queryByText('No conversations found.')).toBeNull();
+
+  fetchSessionsMock.mockResolvedValue([card('a', 'Back online')]);
+  await fireEvent.press(screen.getByTestId('sessions-retry'));
+  expect(await screen.findByText('Back online')).toBeOnTheScreen();
+});
+
+it('returning to the app retries by itself only while the error shows', async () => {
+  // AppState is a jest mock in this preset: take the screen's listener from it.
+  const addListener = AppState.addEventListener as unknown as jest.Mock;
+  fetchSessionsMock.mockRejectedValue(new Error('Can’t reach the bridge at http://x.'));
+  await render(<SessionListScreen onOpen={jest.fn()} />);
+  await screen.findByText('Couldn’t load');
+
+  fetchSessionsMock.mockResolvedValue([card('a', 'Back online')]);
+  const onChange = addListener.mock.calls.filter((c) => c[0] === 'change').pop()![1];
+  await act(async () => {
+    onChange('active');
+  });
+  expect(await screen.findByText('Back online')).toBeOnTheScreen();
+
+  const calls = fetchSessionsMock.mock.calls.length;
+  await act(async () => {
+    onChange('active');
+  });
+  expect(fetchSessionsMock).toHaveBeenCalledTimes(calls);
+});
+
+it('the folder button opens Files', async () => {
+  fetchSessionsMock.mockResolvedValue([card('a', 'Fix the composer')]);
+  const onOpenFiles = jest.fn();
+  await render(<SessionListScreen onOpen={jest.fn()} onOpenFiles={onOpenFiles} />);
+  await fireEvent.press(await screen.findByTestId('open-files'));
+  expect(onOpenFiles).toHaveBeenCalledTimes(1);
 });

@@ -14,3 +14,22 @@ for (const key of Object.getOwnPropertyNames(globalThis)) {
     }
   }
 }
+
+// Native modules used by the Files view. Mocked at the boundary so any
+// suite that imports the app tree (App, ChatScreen) loads without them.
+jest.mock('expo-video', () => {
+  const { View } = require('react-native');
+  return {
+    useVideoPlayer: jest.fn(() => ({ play: jest.fn(), pause: jest.fn() })),
+    VideoView: (props) => require('react').createElement(View, { testID: props.testID }),
+  };
+});
+jest.mock('expo-media-library', () => ({
+  requestPermissionsAsync: jest.fn(async () => ({ granted: true })),
+  Asset: { create: jest.fn(async () => ({ id: 'asset' })) },
+}));
+jest.mock('expo-sharing', () => ({
+  isAvailableAsync: jest.fn(async () => true),
+  shareAsync: jest.fn(async () => {}),
+}));
+jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn(async () => true) }));

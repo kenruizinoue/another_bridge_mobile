@@ -17,8 +17,9 @@ The app is a thin client over the bridge's session API (all requests authenticat
 - `POST /sessions/{id}/resume/stream` continues a session, streaming the reply as SSE
 - `POST /sessions/{id}/resume/queue` queues a message server-side while a turn is already running
 - `GET /sessions/{id}/resume/status` tells a reconnecting client whether a turn is still running
+- `GET /sessions/{id}/resume/attach` streams the rest of a running turn to a client that came back (needs a bridge with ticket 20)
 
-The Mac's transcript is the source of truth. If the stream drops (phone locked, network change, app killed), the app never re-sends: it polls the status endpoint and re-syncs from the transcript until the reply lands.
+The Mac's transcript is the source of truth. If the stream drops (phone locked, network change, app killed, chat left), the app never re-sends: it re-syncs from the transcript and attaches to the rest of the turn, so the reply keeps streaming. With an older bridge it polls the status endpoint until the reply lands.
 
 ## Setup
 

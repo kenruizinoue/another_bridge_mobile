@@ -1,7 +1,7 @@
 // Session endpoints. Thin wrappers over apiGet that own their URL/query
 // construction and return already-typed data to the screens.
 import { apiGet, apiPost, streamSSE } from './client';
-import type { MessagesPage, SessionCard, ToolRef } from './types';
+import type { MessagesPage, SessionCard, TerminalInfo, ToolRef } from './types';
 
 // A base64 image to attach (raw base64, no data: prefix).
 export type OutgoingImage = { media_type: string; data: string };
@@ -11,11 +11,17 @@ export type OutgoingImage = { media_type: string; data: string };
 // text-readable extension works without inflating the prompt.
 export type OutgoingFile = { name: string; data: string };
 
+// Why queued messages wait: the session is working in a terminal tab on
+// the Mac, or the bridge's cap on phone turns running at once is reached.
+export type HoldReason = 'terminal' | 'limit';
+
 export type ResumeStatus = {
   running: boolean;
   started_at: number | null;
   queued: string[]; // messages waiting to run, in order
   queue_count: number;
+  held?: HoldReason | null; // missing on older bridges
+  terminal?: TerminalInfo | null;
 };
 
 // The catch-up signal: is a resume running or are messages queued on the
@@ -42,6 +48,14 @@ export async function enqueueResume(
   });
 }
 
+// "Send anyway": queued messages stop waiting for the terminal tab and
+// the turn cap. They still run one at a time.
+export async function releaseQueue(
+  sessionId: string,
+): Promise<{ ok: boolean; session_id: string; released: number }> {
+  return apiPost(`/sessions/${sessionId}/resume/queue/release`, {});
+}
+
 export type StreamHandlers = {
   onText: (chunk: string) => void; // a token / text chunk
   onTool: (tool: ToolRef) => void; // a tool step surfaced
@@ -51,7 +65,15 @@ export type StreamHandlers = {
   // was sent and Claude may still be finishing on the Mac
   onSpeech?: (speech: string) => void; // voice turns only: the schema-
   // guaranteed spoken summary, emitted just before `done`
+  onQueued?: (reason: HoldReason) => void; // the bridge held the message
+  // in its queue instead of running it (a working terminal tab or the
+  // turn cap); `done` follows, and the queue runs it later
 };
+
+// A tool step from an SSE `tool` payload, with safe defaults.
+function toTool(payload: any): ToolRef {
+  return { name: payload.name ?? '', label: payload.label ?? '', stat: payload.stat ?? null };
+}
 
 // Streaming resume: reads the SSE the bridge emits and dispatches each
 // event to a handler so the UI can render tokens as they arrive. Never
@@ -71,9 +93,9 @@ export function resumeSessionStream(
     { message, images, files, ...(voice && { voice: true }) },
     (ev, payload) => {
       if (ev === 'text') h.onText(payload.chunk ?? '');
-      else if (ev === 'tool')
-        h.onTool({ name: payload.name ?? '', label: payload.label ?? '', stat: payload.stat ?? null });
+      else if (ev === 'tool') h.onTool(toTool(payload));
       else if (ev === 'speech') h.onSpeech?.(payload.speech ?? '');
+      else if (ev === 'queued') h.onQueued?.(payload.reason === 'limit' ? 'limit' : 'terminal');
       else if (ev === 'done') {
         gotDone = true;
         h.onDone(); // the ONLY reliable "finished" signal
@@ -86,6 +108,36 @@ export function resumeSessionStream(
       if (gotDone || errored) return; // completion/error already delivered
       if (err) h.onError(err); // never reached the bridge / HTTP error
       else h.onInterrupted(); // closed WITHOUT a done event → dropped mid-flight
+    },
+  );
+}
+
+export type AttachHandlers = {
+  onText: (chunk: string) => void;
+  onTool: (tool: ToolRef) => void;
+  onDone: () => void; // the turn ended, or nothing was running
+  onDropped: (status?: number) => void; // ended without done; 404 = a
+  // bridge without /resume/attach
+};
+
+// Watch a turn that is already running (after leaving the chat, a dropped
+// stream or a relaunch). Fetch the transcript first: the bridge replays
+// only the message being written now, then streams the rest live.
+export function attachResumeStream(sessionId: string, h: AttachHandlers): () => void {
+  let gotDone = false;
+  return streamSSE(
+    `/sessions/${sessionId}/resume/attach`,
+    undefined,
+    (ev, payload) => {
+      if (ev === 'text') h.onText(payload.chunk ?? '');
+      else if (ev === 'tool') h.onTool(toTool(payload));
+      else if (ev === 'done') {
+        gotDone = true;
+        h.onDone();
+      }
+    },
+    (_err, status) => {
+      if (!gotDone) h.onDropped(status);
     },
   );
 }

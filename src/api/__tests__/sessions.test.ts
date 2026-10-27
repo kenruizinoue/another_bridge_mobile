@@ -2,9 +2,11 @@
 // completion semantics: `done` is the only "finished" signal; a close
 // without it means "interrupted, still running on the Mac".
 import {
+  attachResumeStream,
   enqueueResume,
   fetchMessages,
   fetchSessions,
+  releaseQueue,
   resumeSessionStream,
   resumeStatus,
   type StreamHandlers,
@@ -47,6 +49,22 @@ it('dispatches text chunks and tool steps', () => {
   expect(h.onTool).toHaveBeenCalledWith({ name: 'Edit', label: 'Edit(a.ts)', stat: '+1 -1' });
 });
 
+it('a queued event (held for a working terminal or the cap) reaches onQueued, then done', () => {
+  const onQueued = jest.fn();
+  const { h, onEvent, onEnd } = run({ onQueued });
+  onEvent('queued', { reason: 'terminal', queued: 1 });
+  onEvent('done', {});
+  onEnd(undefined);
+  expect(onQueued).toHaveBeenCalledWith('terminal');
+  expect(h.onDone).toHaveBeenCalledTimes(1);
+  expect(h.onInterrupted).not.toHaveBeenCalled();
+
+  streamSSEMock.mockClear();
+  const second = run({ onQueued: jest.fn() });
+  second.onEvent('queued', { reason: 'limit' });
+  expect(second.h.onQueued).toHaveBeenCalledWith('limit');
+});
+
 it('a clean close after done does NOT also fire onInterrupted', () => {
   const { h, onEvent, onEnd } = run();
   onEvent('done', {});
@@ -79,6 +97,36 @@ it('a bridge error event suppresses the trailing onEnd delivery', () => {
 });
 
 // URL and body construction — pins the wire contract with the bridge.
+describe('attachResumeStream', () => {
+  function attach() {
+    const h = { onText: jest.fn(), onTool: jest.fn(), onDone: jest.fn(), onDropped: jest.fn() };
+    attachResumeStream('sid', h);
+    const [path, body, onEvent, onEnd] = streamSSEMock.mock.calls[0];
+    return { h, path, body, onEvent, onEnd };
+  }
+
+  it('GETs the attach endpoint and dispatches text, tools and done', () => {
+    const { h, path, body, onEvent, onEnd } = attach();
+    expect(path).toBe('/sessions/sid/resume/attach');
+    expect(body).toBeUndefined();
+    onEvent('text', { chunk: 'hi' });
+    onEvent('tool', { name: 'Bash', label: 'Bash: ls' });
+    onEvent('done', {});
+    onEnd(undefined);
+    expect(h.onText).toHaveBeenCalledWith('hi');
+    expect(h.onTool).toHaveBeenCalledWith({ name: 'Bash', label: 'Bash: ls', stat: null });
+    expect(h.onDone).toHaveBeenCalledTimes(1);
+    expect(h.onDropped).not.toHaveBeenCalled();
+  });
+
+  it('an end without done is a drop, with the HTTP status when there is one', () => {
+    const { h, onEnd } = attach();
+    onEnd('Bridge returned 404.', 404);
+    expect(h.onDropped).toHaveBeenCalledWith(404);
+    expect(h.onDone).not.toHaveBeenCalled();
+  });
+});
+
 describe('endpoint wrappers', () => {
   beforeEach(() => {
     apiGetMock.mockReset();
@@ -104,6 +152,12 @@ describe('endpoint wrappers', () => {
     apiGetMock.mockResolvedValue({});
     await resumeStatus('sid');
     expect(apiGetMock).toHaveBeenCalledWith('/sessions/sid/resume/status');
+  });
+
+  it('releaseQueue posts to the release endpoint (Send anyway)', async () => {
+    apiPostMock.mockResolvedValue({ ok: true, released: 1 });
+    await releaseQueue('sid');
+    expect(apiPostMock).toHaveBeenCalledWith('/sessions/sid/resume/queue/release', {});
   });
 
   it('enqueueResume posts the message with its images', async () => {

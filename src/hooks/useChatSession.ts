@@ -5,16 +5,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import {
+  attachResumeStream,
   enqueueResume,
   fetchMessages,
+  releaseQueue,
   resumeSessionStream,
   resumeStatus,
+  type HoldReason,
   type OutgoingFile,
   type OutgoingImage,
+  type ResumeStatus,
 } from '../api/sessions';
-import type { ToolRef, Turn } from '../api/types';
+import type { MessagesPage, TerminalInfo, ToolRef, Turn } from '../api/types';
 
-const CATCH_UP_INTERVALS_MS = [3000, 5000, 10000, 30000];
+// Polling backoff, used only when live attach can't run (a bridge without
+// /resume/attach, a queued turn that hasn't started) and to retry a failed
+// catch-up: fast, then ease off, never slower than 15 s.
+const CATCH_UP_INTERVALS_MS = [3000, 5000, 10000, 15000];
 
 export default function useChatSession(sessionId: string) {
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -29,58 +36,96 @@ export default function useChatSession(sessionId: string) {
   const [streamText, setStreamText] = useState('');
   const [streamTools, setStreamTools] = useState<ToolRef[]>([]);
   const [syncing, setSyncing] = useState(false);
+  // Watching a running turn through /resume/attach (after leaving the
+  // chat, a dropped stream or a relaunch): the reply streams in as if the
+  // phone never left.
+  const [live, setLive] = useState(false);
+  // The last catch-up couldn't reach the bridge; it retries on its own.
+  const [offline, setOffline] = useState(false);
   const [queued, setQueued] = useState<string[]>([]);
+  // Why the queue waits (a working terminal tab, or the bridge's turn cap),
+  // and the terminal tab holding this session, if any. While that tab
+  // works, the bridge holds phone messages instead of starting a second
+  // copy of the session, and catch-up keeps showing the tab's replies.
+  const [held, setHeld] = useState<HoldReason | null>(null);
+  const [terminal, setTerminal] = useState<TerminalInfo | null>(null);
   // Voice turns only: the schema-guaranteed spoken summary of the last
   // finished reply (null otherwise / until it lands).
   const [speech, setSpeech] = useState<string | null>(null);
 
-  // Catch-up state. `inFlight` = a turn we sent is still expected to be
-  // running on the Mac (kept in a ref so listeners see the latest without
-  // re-subscribing). Backoff mirrors the web client: fast, then ease off.
+  // Kept in refs so listeners and timers see the latest without
+  // re-subscribing. `inFlight` = a turn is expected to be running on the
+  // Mac. A stream's token goes stale when it is replaced, so late events
+  // from an aborted stream are ignored.
+  const mounted = useRef(true);
   const inFlight = useRef(false);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollIter = useRef(0);
+  const sendCancel = useRef<(() => void) | null>(null);
+  const sendVoice = useRef(false);
+  const sendToken = useRef(0);
+  const attachCancel = useRef<(() => void) | null>(null);
+  const attachToken = useRef(0);
+  const attachSupported = useRef(true);
+  const loadedOlder = useRef(false);
+  const loadingOlder = useRef(false);
+  const catchUpRef = useRef<(fromPoll?: boolean) => Promise<void>>(async () => {});
 
-  // Re-fetch the latest page. `initial` shows the full-screen spinner and
-  // surfaces load errors; `refresh` (the top-bar button) keeps the current
-  // content on screen and only spins the button, so a live session that
-  // grew shows its new turns at the bottom without a jarring blank.
-  const applyLatest = useCallback(
-    async (mode: 'initial' | 'refresh') => {
-      mode === 'initial' ? setLoading(true) : setRefreshing(true);
-      if (mode === 'initial') setError(null);
-      try {
-        const page = await fetchMessages(sessionId);
-        setTurns(page.messages);
-        setNextBefore(page.next_before);
-        setHasMore(page.has_more);
-      } catch (e) {
-        // On refresh, keep what's on screen rather than wiping it.
-        if (mode === 'initial') setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        mode === 'initial' ? setLoading(false) : setRefreshing(false);
-      }
-    },
-    [sessionId],
-  );
+  // Show the latest page, keeping any older pages already loaded with
+  // loadOlder so a catch-up never yanks the reader back to the bottom page.
+  const applyPage = useCallback((page: MessagesPage) => {
+    setTurns((prev) => {
+      const oldestNew = page.messages.reduce((m, t) => Math.min(m, t.index), Infinity);
+      const older = prev.filter((t) => t.index >= 0 && t.index < oldestNew);
+      return older.length ? [...page.messages, ...older] : page.messages;
+    });
+    if (!loadedOlder.current) {
+      setNextBefore(page.next_before);
+      setHasMore(page.has_more);
+    }
+  }, []);
+
+  // Initial load: the full-screen spinner, and load errors are surfaced.
+  const applyLatest = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const page = await fetchMessages(sessionId);
+      if (!mounted.current) return;
+      loadedOlder.current = false;
+      setTurns(page.messages);
+      setNextBefore(page.next_before);
+      setHasMore(page.has_more);
+    } catch (e) {
+      if (mounted.current) setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (mounted.current) setLoading(false);
+    }
+  }, [sessionId]);
 
   const loadOlder = useCallback(async () => {
-    if (!hasMore || loadingMore || nextBefore == null) return;
+    // The ref guard stops a second scroll event from appending the same
+    // page before the loading state lands.
+    if (!hasMore || loadingOlder.current || nextBefore == null) return;
+    loadingOlder.current = true;
     setLoadingMore(true);
     try {
       const page = await fetchMessages(sessionId, nextBefore);
+      if (!mounted.current) return;
       // Older page is also newest-first; append after current turns so
       // the whole array stays globally newest-first (inverted list shows
       // index 0 at the bottom).
+      loadedOlder.current = true;
       setTurns((prev) => [...prev, ...page.messages]);
       setNextBefore(page.next_before);
       setHasMore(page.has_more);
     } catch {
       // A failed older-page fetch shouldn't wipe what's on screen.
     } finally {
-      setLoadingMore(false);
+      loadingOlder.current = false;
+      if (mounted.current) setLoadingMore(false);
     }
-  }, [hasMore, loadingMore, nextBefore, sessionId]);
+  }, [hasMore, nextBefore, sessionId]);
 
   const stopPolling = useCallback(() => {
     if (pollTimer.current) {
@@ -89,68 +134,185 @@ export default function useChatSession(sessionId: string) {
     }
   }, []);
 
-  // Catch-up: the Mac's transcript is the source of truth, so instead of
-  // fighting to keep a socket open we re-sync from it. Each pass reads the
-  // "is a resume still running?" signal + the latest turns. While running,
-  // it re-polls with backoff; once the run finishes, the last pass shows
-  // the final reply and we stop. Never re-sends — pure read, so it's safe
-  // to fire on reconnect / foreground without duplicating the turn.
+  const schedule = useCallback(() => {
+    const idx = Math.min(pollIter.current, CATCH_UP_INTERVALS_MS.length - 1);
+    pollIter.current += 1;
+    stopPolling();
+    pollTimer.current = setTimeout(() => {
+      void catchUpRef.current(true);
+    }, CATCH_UP_INTERVALS_MS[idx]);
+  }, [stopPolling]);
+
+  const stopAttach = useCallback(() => {
+    attachToken.current += 1;
+    attachCancel.current?.();
+    attachCancel.current = null;
+  }, []);
+
+  // Drop the live send stream (the turn keeps running on the Mac).
+  const detachSend = useCallback(() => {
+    if (!sendCancel.current) return;
+    sendToken.current += 1;
+    sendCancel.current();
+    sendCancel.current = null;
+    setSending(false);
+  }, []);
+
+  const clearLiveView = useCallback(() => {
+    setSending(false);
+    setLive(false);
+    setStreamText('');
+    setStreamTools([]);
+  }, []);
+
+  // Watch the running turn live. Call right after a transcript fetch: the
+  // bridge replays only the message being written now, since finished
+  // ones are already in the turns on screen.
+  const follow = useCallback(() => {
+    stopAttach();
+    const token = attachToken.current;
+    const mine = () => mounted.current && token === attachToken.current;
+    setSending(false);
+    setLive(true);
+    setStreamText('');
+    setStreamTools([]);
+    attachCancel.current = attachResumeStream(sessionId, {
+      onText: (chunk) => mine() && setStreamText((t) => t + chunk),
+      onTool: (tool) => mine() && setStreamTools((ts) => [...ts, tool]),
+      onDone: () => {
+        if (!mine()) return;
+        attachCancel.current = null;
+        // Keep the streamed reply on screen until catch-up swaps in the
+        // transcript (or attaches to the next queued turn).
+        void catchUpRef.current();
+      },
+      onDropped: (status) => {
+        if (!mine()) return;
+        attachCancel.current = null;
+        if (status === 404) attachSupported.current = false; // older bridge
+        schedule(); // the next pass re-attaches if the turn still runs
+      },
+    });
+  }, [sessionId, schedule, stopAttach]);
+
+  // Catch-up: the Mac's transcript is the source of truth. Each pass reads
+  // the "is a resume still running?" signal + the latest turns. While a
+  // turn runs it attaches to it live (or polls on an older bridge); once
+  // everything finished, the last pass shows the final reply and stops.
+  // Never re-sends, so it is safe on reconnect / foreground / refresh.
   const catchUp = useCallback(
     async (fromPoll = false) => {
       if (!fromPoll) pollIter.current = 0;
-      let status;
+      stopPolling();
+      if (sendCancel.current) {
+        // A live send stream drives the view; its done or drop calls
+        // catch-up again. Only mirror the server queue meanwhile.
+        try {
+          const s = await resumeStatus(sessionId);
+          if (mounted.current) {
+            setQueued(s.queued);
+            setHeld(s.held ?? null);
+            setTerminal(s.terminal ?? null);
+          }
+        } catch {
+          // the stream itself reports trouble
+        }
+        return;
+      }
+      let status: ResumeStatus;
       try {
         status = await resumeStatus(sessionId);
         const page = await fetchMessages(sessionId);
-        setTurns(page.messages);
-        setNextBefore(page.next_before);
-        setHasMore(page.has_more);
+        if (!mounted.current) return;
+        applyPage(page);
         setQueued(status.queued);
+        setHeld(status.held ?? null);
+        setTerminal(status.terminal ?? null);
         setSendError(null);
+        setOffline(false);
       } catch {
-        // Transient (still offline). Don't reschedule into a tight failure
-        // loop — the next foreground / online / manual ⟳ will retry.
+        if (!mounted.current) return;
+        // Offline or ngrok reconnecting: keep the busy state and retry
+        // with backoff, so the bar can't stick once the Mac is back.
+        setOffline(true);
+        if (inFlight.current) schedule();
         return;
       }
 
       // Busy while a turn is generating OR messages are still queued.
       if (status.running || status.queue_count > 0) {
+        inFlight.current = true;
         setSyncing(true);
-        const idx = Math.min(pollIter.current, CATCH_UP_INTERVALS_MS.length - 1);
-        pollIter.current += 1;
-        stopPolling();
-        pollTimer.current = setTimeout(() => {
-          void catchUp(true);
-        }, CATCH_UP_INTERVALS_MS[idx]);
+        if (status.running && attachSupported.current) {
+          pollIter.current = 0;
+          follow();
+        } else {
+          stopAttach();
+          clearLiveView();
+          schedule();
+        }
       } else {
-        // Nothing running and nothing queued — the conversation has fully
-        // advanced; the latest fetch already has every reply.
+        // Nothing running and nothing queued: the latest fetch already
+        // has every reply.
         inFlight.current = false;
+        stopAttach();
+        clearLiveView();
         setSyncing(false);
-        setSending(false);
-        setStreamText('');
-        setStreamTools([]);
         setQueued([]);
-        stopPolling();
+        // A terminal tab is working on this session: keep pulling the
+        // transcript so its replies show up here too.
+        if (status.terminal?.active) schedule();
       }
     },
-    [sessionId, stopPolling],
+    [sessionId, applyPage, clearLiveView, follow, schedule, stopAttach, stopPolling],
   );
+  catchUpRef.current = catchUp;
 
-  // Reconnect on return-to-foreground (RN's analogue of visibilitychange):
-  // if a turn was in flight when we were backgrounded (iOS suspends the
-  // stream), catch up from the transcript.
+  // Back from the background: iOS froze the app, so a text send's stream
+  // or the attach may be dead without saying so. Re-sync and attach fresh.
+  // A voice send keeps its stream (it carries the spoken summary); the
+  // stream's idle watchdog catches it if it died.
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active' && inFlight.current) void catchUp();
+      if (state !== 'active' || !inFlight.current) return;
+      if (sendCancel.current && sendVoice.current) return;
+      detachSend();
+      void catchUp();
     });
     return () => sub.remove();
-  }, [catchUp]);
+  }, [catchUp, detachSend]);
 
-  useEffect(() => stopPolling, [stopPolling]);
+  // Leaving the chat closes every stream and timer. The turn keeps
+  // running on the Mac; reopening the chat attaches to it again.
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      stopPolling();
+      stopAttach();
+      sendToken.current += 1;
+      sendCancel.current?.();
+      sendCancel.current = null;
+    };
+  }, [stopPolling, stopAttach]);
+
+  // The top-bar button. During a turn it restarts catch-up (a fresh
+  // transcript plus a fresh attach); otherwise it pulls the latest turns
+  // and picks up a turn started elsewhere. Keeps what's on screen when
+  // the bridge can't be reached.
+  const refresh = useCallback(async () => {
+    if (sendCancel.current && sendVoice.current) return;
+    detachSend();
+    setRefreshing(true);
+    try {
+      await catchUp();
+    } finally {
+      if (mounted.current) setRefreshing(false);
+    }
+  }, [catchUp, detachSend]);
 
   // Send a message. If nothing is in flight, stream it live. If a turn is
-  // already running or messages are queued, QUEUE it server-side — the
+  // already running or messages are queued, QUEUE it server-side: the
   // bridge keeps advancing the conversation even if the phone locks, and
   // catch-up pulls it all when we return. `restore` is called when the
   // message must be handed back to the composer (send never started).
@@ -168,7 +330,9 @@ export default function useChatSession(sessionId: string) {
       const voice = options?.voice ?? false;
 
       const preview = message || `📎 ${images.length + files.length} attachment(s)`;
-      const busy = sending || syncing || queued.length > 0;
+      // A terminal tab working on this session counts as busy: the bridge
+      // queues the message until the tab is done, never a second copy.
+      const busy = sending || syncing || live || queued.length > 0 || !!terminal?.active;
       if (busy) {
         setQueued((q) => [...q, preview]); // optimistic; status polls reconcile
         inFlight.current = true;
@@ -189,7 +353,9 @@ export default function useChatSession(sessionId: string) {
       }
 
       // Nothing in flight → stream it live.
+      stopAttach();
       setSending(true);
+      setLive(false);
       setStreamText('');
       setStreamTools([]);
       inFlight.current = true;
@@ -205,6 +371,13 @@ export default function useChatSession(sessionId: string) {
       };
       setTurns((prev) => [optimistic, ...prev]); // newest-first: index 0 = bottom
 
+      sendToken.current += 1;
+      const token = sendToken.current;
+      const mine = () => mounted.current && token === sendToken.current;
+      const release = () => {
+        if (token === sendToken.current) sendCancel.current = null;
+      };
+
       const rollback = () => {
         inFlight.current = false;
         setTurns((prev) => prev.filter((t) => t.index !== -1));
@@ -214,35 +387,46 @@ export default function useChatSession(sessionId: string) {
         setStreamTools([]);
       };
 
-      resumeSessionStream(
+      sendVoice.current = voice;
+      sendCancel.current = resumeSessionStream(
         sessionId,
         message,
         {
-          onText: (chunk) => setStreamText((t) => t + chunk),
-          onTool: (tool) => setStreamTools((ts) => [...ts, tool]),
-          onSpeech: setSpeech,
+          onText: (chunk) => mine() && setStreamText((t) => t + chunk),
+          onTool: (tool) => mine() && setStreamTools((ts) => [...ts, tool]),
+          onSpeech: (s) => mine() && setSpeech(s),
+          onQueued: (reason) => {
+            if (!mine()) return;
+            // The bridge queued it instead (a terminal tab started working,
+            // or the turn cap): it isn't in the transcript yet, so show it
+            // in the queue, not as a sent turn. `done` follows.
+            setTurns((prev) => prev.filter((t) => t.index !== -1));
+            setQueued((q) => [...q, preview]);
+            setHeld(reason);
+            setSending(false);
+          },
           onError: (msg) => {
+            if (!mine()) return;
+            release();
             // Failed before producing a turn (couldn't reach bridge / 409 /
-            // bad key) — roll back so the message isn't lost.
+            // bad key): roll back so the message isn't lost.
             rollback();
             setSendError(msg);
           },
           onDone: async () => {
-            // The `done` event fired — this streamed turn finished. Hand to
-            // catch-up: it refreshes to canonical turns and, if a queued
-            // message is still draining, keeps syncing until the queue empties.
-            setSending(false);
-            setStreamText('');
-            setStreamTools([]);
+            if (!mine()) return;
+            release();
+            // The `done` event fired: this streamed turn finished. Catch-up
+            // swaps in the canonical turns and, if a queued message is
+            // still draining, attaches to it.
             await catchUp();
           },
           onInterrupted: () => {
-            // Connection dropped before `done`, but the turn IS running on the
-            // Mac. Don't roll back and don't error — hand off to catch-up,
-            // which polls the transcript until the reply lands.
-            setStreamText('');
-            setStreamTools([]);
-            setSending(false);
+            if (!mine()) return;
+            release();
+            // Connection dropped before `done`, but the turn IS running on
+            // the Mac. Don't roll back and don't error: catch-up re-syncs
+            // and attaches to the rest of the turn.
             void catchUp();
           },
         },
@@ -251,28 +435,46 @@ export default function useChatSession(sessionId: string) {
         voice,
       );
     },
-    [sending, syncing, queued.length, sessionId, catchUp],
+    [sending, syncing, live, queued.length, terminal, sessionId, catchUp, stopAttach],
   );
 
-  // On open (mount — includes a fresh app launch or coming back to the
-  // card after leaving), load the conversation AND ask the server whether
-  // a resume is still running for this session. Because that state lives
-  // on the bridge (not in this hook), it's correct even if the app was
-  // killed mid-turn: if running, show the indicator and catch up.
+  // "Send anyway": run the queued messages now instead of waiting for the
+  // terminal tab (or the turn cap). For when Ken knows it's safe.
+  const sendAnyway = useCallback(async () => {
+    try {
+      await releaseQueue(sessionId);
+    } catch (e) {
+      setSendError(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    setHeld(null);
+    void catchUp();
+  }, [sessionId, catchUp]);
+
+  // On open (mount: a fresh app launch or coming back to the chat after
+  // leaving), load the conversation AND ask the server whether a resume
+  // is still running for this session. That state lives on the bridge,
+  // so it is right even if the app was killed mid-turn: if running,
+  // catch up and attach to it.
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      await applyLatest('initial');
+      await applyLatest();
       if (cancelled) return;
       try {
         const status = await resumeStatus(sessionId);
-        if (!cancelled && (status.running || status.queue_count > 0)) {
+        if (cancelled) return;
+        setTerminal(status.terminal ?? null);
+        if (status.running || status.queue_count > 0) {
           inFlight.current = true;
           setQueued(status.queued);
+          setHeld(status.held ?? null);
           void catchUp();
+        } else if (status.terminal?.active) {
+          void catchUp(); // follow the terminal tab's replies
         }
       } catch {
-        // offline / status unavailable — ⟳ or foreground will retry
+        // offline / status unavailable: ⟳ or foreground will retry
       }
     })();
     return () => {
@@ -288,14 +490,19 @@ export default function useChatSession(sessionId: string) {
     loadingMore,
     refreshing,
     error,
-    refresh: () => applyLatest('refresh'),
+    refresh,
     loadOlder,
     // send / live state
     send,
     sending,
     sendError,
     syncing,
+    live,
+    offline,
     queued,
+    held,
+    terminal,
+    sendAnyway,
     streamText,
     streamTools,
     speech,
