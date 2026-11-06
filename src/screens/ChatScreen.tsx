@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -17,10 +18,13 @@ import ChatStatusBar from '../components/ChatStatusBar';
 import Composer from '../components/Composer';
 import ConversationPill from '../components/ConversationPill';
 import GlassIconButton from '../components/GlassIconButton';
+import QueueTray from '../components/QueueTray';
 import StreamingTurn from '../components/StreamingTurn';
 import TurnRow from '../components/TurnRow';
 import useAttachments, { MAX_FILES, MAX_IMAGES } from '../hooks/useAttachments';
-import useChatSession from '../hooks/useChatSession';
+import useChatSession, { type SendMode } from '../hooks/useChatSession';
+import type { QueueItem } from '../api/sessions';
+import useOpenOnMac from '../hooks/useOpenOnMac';
 import useVoiceConversation from '../hooks/useVoiceConversation';
 import useVoiceInput from '../hooks/useVoiceInput';
 import { loadDraft, saveDraft } from '../lib/drafts';
@@ -42,6 +46,10 @@ export default function ChatScreen({
   onOpenFiles?: (path?: string | null) => void;
 }) {
   const chat = useChatSession(session.session_id);
+  const mac = useOpenOnMac();
+  // While Claude works: send "now" (into the running turn) or "after"
+  // (queue). Back to "now" after every send.
+  const [mode, setMode] = useState<SendMode>('now');
   const [draft, setDraft] = useState('');
   // The saved draft loads once; until then nothing is written, so the
   // empty first render never erases it. Typing before it loads wins.
@@ -103,14 +111,55 @@ export default function ChatScreen({
     void saveDraft(session.session_id, '');
     images.clear();
     setPickError(null);
-    void chat.send(message, out, outFiles, () => {
-      // Send never started — hand the message back to the composer.
-      setDraft(message);
-      images.restore(sentImages, sentFiles);
-    });
-  }, [draft, images, chat, session.session_id]);
+    void chat.send(
+      message,
+      out,
+      outFiles,
+      () => {
+        // Send never started: hand the message back to the composer.
+        setDraft(message);
+        images.restore(sentImages, sentFiles);
+      },
+      { mode },
+    );
+    setMode('now');
+  }, [draft, images, chat, session.session_id, mode]);
 
   const busy = chat.sending || chat.syncing || chat.queued.length > 0;
+  // A phone turn is running, so it can take a message now or be stopped.
+  const turnRunning = chat.sending || chat.live || chat.canInject;
+  const nowReason = chat.terminal?.active
+    ? 'Working in a Mac tab, so it waits in the queue.'
+    : chat.held === 'limit'
+      ? 'Waiting for other phone turns, so it waits in the queue.'
+      : chat.held === 'paused'
+        ? 'The queue is stopped. Run it, or send a queued message now.'
+        : "This turn can't take messages, so it waits in the queue.";
+
+  // Send now and Send all now skip a working Mac tab only after asking.
+  const confirmPastTerminal = (go: () => void) => {
+    if (chat.held === 'terminal' && !chat.canInject) {
+      Alert.alert(
+        'Start it now anyway?',
+        'This session is working in a Mac tab. The Mac tab and the phone may both work on it.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Start now', onPress: go },
+        ],
+      );
+    } else go();
+  };
+  const editQueued = (item: QueueItem) =>
+    Alert.prompt(
+      'Edit queued message',
+      undefined,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Save', onPress: (text?: string) => text && void chat.editQueued(item.id, text) },
+      ],
+      'plain-text',
+      item.text,
+    );
 
   // Live reading: while the reply streams, completed sentences are spoken
   // as they arrive (the hook skips the end-of-turn summary when this ran).
@@ -159,6 +208,15 @@ export default function ChatScreen({
           size={40}
           testID="chat-refresh"
           label="Refresh"
+        />
+        <GlassIconButton
+          name="desktop-outline"
+          onPress={() => void mac.open(session.session_id)}
+          disabled={mac.opening}
+          busy={mac.opening}
+          size={40}
+          testID="chat-open-on-mac"
+          label="Open on Mac"
         />
         {onOpenFiles ? (
           <GlassIconButton
@@ -242,7 +300,20 @@ export default function ChatScreen({
           held={chat.held}
           heldBy={chat.heldBy}
           terminal={chat.terminal}
-          onSendAnyway={chat.sendAnyway}
+          showQueueList={false}
+        />
+        <QueueTray
+          steers={chat.steers}
+          items={chat.queueItems}
+          paused={chat.paused}
+          lastDeleted={chat.lastDeleted}
+          notice={chat.notice}
+          onSendNow={(id) => confirmPastTerminal(() => void chat.sendNow(id))}
+          onSendAllNow={() => confirmPastTerminal(() => void chat.sendAllNow())}
+          onDelete={(id) => void chat.deleteQueued(id)}
+          onEdit={editQueued}
+          onUndo={() => void chat.undoDelete()}
+          onRunQueue={() => void chat.resumeQueue()}
         />
         {conversation.active ? (
           <ConversationPill
@@ -271,6 +342,12 @@ export default function ChatScreen({
             canAttachImages={images.attachments.length < MAX_IMAGES}
             canAttachFiles={images.files.length < MAX_FILES}
             busy={busy}
+            mode={mode}
+            onModeChange={setMode}
+            nowAvailable={turnRunning && !chat.terminal?.active}
+            nowReason={nowReason}
+            running={turnRunning}
+            onStop={() => void chat.stop()}
             voiceStatus={voice.status}
             onMicPress={() => {
               setPickError(null);

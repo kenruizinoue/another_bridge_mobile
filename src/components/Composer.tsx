@@ -1,26 +1,10 @@
-import { Ionicons } from '@expo/vector-icons';
-import {
-  ActionSheetIOS,
-  Alert,
-  Image,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActionSheetIOS, Alert, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { Attachment, FileAttachment } from '../hooks/useAttachments';
+import type { SendMode } from '../hooks/useChatSession';
 import type { VoiceStatus } from '../hooks/useVoiceInput';
 import { colors, font, mono, space } from '../theme';
+import AttachmentStrip from './AttachmentStrip';
 import GlassIconButton from './GlassIconButton';
-
-function prettySize(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-  if (bytes >= 1024) return `${Math.round(bytes / 1024)}KB`;
-  return `${bytes}B`;
-}
 
 // The message composer: attachment strip (image thumbnails + file chips)
 // plus the input row — a + button (action sheet: photos or files), a mic
@@ -42,6 +26,12 @@ export default function Composer({
   onMicPress,
   onConversationPress,
   onSend,
+  mode = 'after',
+  onModeChange,
+  nowAvailable = true,
+  nowReason = null,
+  running = false,
+  onStop,
 }: {
   draft: string;
   onChangeDraft: (text: string) => void;
@@ -60,8 +50,19 @@ export default function Composer({
   // stays dictation-into-draft; this enters the listen/speak loop.
   onConversationPress?: () => void;
   onSend: () => void;
+  // 1.9.0, while Claude works: send "now" (into the running turn) or
+  // "after" (queue). The switch shows only while busy with something typed.
+  mode?: SendMode;
+  onModeChange?: (mode: SendMode) => void;
+  nowAvailable?: boolean;
+  nowReason?: string | null; // why "now" is off, shown under the switch
+  running?: boolean; // a phone turn is running, so Stop can end it
+  onStop?: () => void; // shown in place of send while the input is empty
 }) {
   const hasContent = !!draft.trim() || attachments.length > 0 || files.length > 0;
+  const showSwitch = busy && hasContent && !!onModeChange;
+  const effectiveMode: SendMode = showSwitch && mode === 'now' && nowAvailable ? 'now' : 'after';
+  const showStop = running && !hasContent && !!onStop;
 
   // One + entry point → iOS action sheet (Alert buttons on Android).
   const openAttachMenu = () => {
@@ -84,51 +85,39 @@ export default function Composer({
 
   return (
     <>
-      {attachments.length > 0 || files.length > 0 ? (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.thumbStrip}
-          contentContainerStyle={styles.thumbStripContent}
-        >
-          {attachments.map((a) => (
-            <View key={a.uri} style={styles.thumbWrap}>
-              <Image source={{ uri: a.uri }} style={styles.thumb} />
-              <Pressable
-                testID={`thumb-remove-${a.uri}`}
-                onPress={() => onRemoveAttachment(a.uri)}
-                hitSlop={6}
-                style={styles.thumbRemove}
-              >
-                <Ionicons name="close" size={13} color="#fff" />
-              </Pressable>
-            </View>
-          ))}
-          {files.map((f) => (
-            <View key={f.uri} style={styles.fileChip} testID={`file-chip-${f.uri}`}>
-              <Ionicons name="document-text-outline" size={18} color={colors.accent} />
-              <View style={styles.fileMeta}>
-                <Text style={styles.fileName} numberOfLines={1}>
-                  {f.name}
-                </Text>
-                <Text style={styles.fileSize}>{prettySize(f.size)}</Text>
-              </View>
-              <Pressable
-                testID={`file-remove-${f.uri}`}
-                onPress={() => onRemoveFile(f.uri)}
-                hitSlop={6}
-                style={styles.thumbRemove}
-              >
-                <Ionicons name="close" size={13} color="#fff" />
-              </Pressable>
-            </View>
-          ))}
-        </ScrollView>
-      ) : null}
+      <AttachmentStrip
+        attachments={attachments}
+        files={files}
+        onRemoveAttachment={onRemoveAttachment}
+        onRemoveFile={onRemoveFile}
+      />
 
       {/* Claude-app style card: the input gets the full top row (grows to
           7 lines, then scrolls); all buttons live on the row below. */}
       <View style={styles.composerWrap}>
+        {showSwitch ? (
+          <View style={styles.modeRow} testID="composer-mode">
+            <Text style={styles.modeLabel}>Send</Text>
+            <ModeChip
+              label="Now"
+              testID="composer-mode-now"
+              selected={effectiveMode === 'now'}
+              disabled={!nowAvailable}
+              onPress={() => onModeChange?.('now')}
+            />
+            <ModeChip
+              label="After this turn"
+              testID="composer-mode-after"
+              selected={effectiveMode === 'after'}
+              onPress={() => onModeChange?.('after')}
+            />
+          </View>
+        ) : null}
+        {showSwitch && !nowAvailable && nowReason ? (
+          <Text style={styles.modeReason} testID="composer-mode-reason">
+            {nowReason}
+          </Text>
+        ) : null}
         <View style={styles.card}>
           <TextInput
             testID="composer-input"
@@ -142,7 +131,11 @@ export default function Composer({
                 : voiceStatus === 'transcribing'
                   ? 'Transcribing…'
                   : busy
-                    ? 'Queue a message…'
+                    ? onModeChange
+                      ? effectiveMode === 'now' && nowAvailable
+                        ? 'Add to what Claude is doing…'
+                        : 'Queue for after this turn…'
+                      : 'Queue a message…'
                     : 'Message… (continues this session)'
             }
             placeholderTextColor="#4a5666"
@@ -173,14 +166,28 @@ export default function Composer({
               />
             ) : null}
             <View style={styles.buttonSpacer} />
-            <GlassIconButton
-              name="arrow-up"
-              onPress={onSend}
-              disabled={!hasContent}
-              filled={hasContent}
-              size={36}
-              testID="composer-send"
-            />
+            {showStop ? (
+              <Pressable
+                testID="composer-stop"
+                accessibilityRole="button"
+                accessibilityLabel="Stop"
+                onPress={onStop}
+                hitSlop={8}
+                style={({ pressed }) => [styles.stop, pressed && styles.pressed]}
+              >
+                <View style={styles.stopSquare} />
+              </Pressable>
+            ) : (
+              <GlassIconButton
+                name={showSwitch && effectiveMode === 'after' ? 'time-outline' : 'arrow-up'}
+                onPress={onSend}
+                disabled={!hasContent}
+                filled={hasContent}
+                size={36}
+                testID="composer-send"
+                label={showSwitch ? (effectiveMode === 'now' ? 'Send now' : 'Queue for after this turn') : 'Send'}
+              />
+            )}
           </View>
         </View>
       </View>
@@ -188,7 +195,65 @@ export default function Composer({
   );
 }
 
+function ModeChip({
+  label,
+  selected,
+  disabled = false,
+  onPress,
+  testID,
+}: {
+  label: string;
+  selected: boolean;
+  disabled?: boolean;
+  onPress: () => void;
+  testID: string;
+}) {
+  return (
+    <Pressable
+      testID={testID}
+      accessibilityRole="button"
+      accessibilityState={{ selected, disabled }}
+      onPress={onPress}
+      disabled={disabled}
+      hitSlop={6}
+      style={[styles.chip, selected && styles.chipSelected, disabled && styles.chipDisabled]}
+    >
+      <Text style={[styles.chipText, selected && styles.chipTextSelected, disabled && styles.chipTextDisabled]}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
+  modeRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingBottom: space.sm, paddingHorizontal: 2 },
+  modeLabel: { color: colors.textFaint, fontSize: font.small, fontFamily: mono },
+  modeReason: { color: colors.textFaint, fontSize: font.tiny, paddingBottom: space.sm, paddingHorizontal: 2 },
+  chip: {
+    height: 28,
+    paddingHorizontal: space.md,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(94,177,255,0.35)',
+    justifyContent: 'center',
+  },
+  chipSelected: { backgroundColor: colors.accent, borderColor: colors.accent },
+  chipDisabled: { borderColor: 'rgba(125,138,153,0.25)' },
+  chipText: { color: colors.accent, fontSize: font.small, fontWeight: '600' },
+  chipTextSelected: { color: '#06121d' },
+  chipTextDisabled: { color: colors.textDim },
+  stop: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(255,107,107,0.55)',
+    backgroundColor: 'rgba(255,107,107,0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stopSquare: { width: 12, height: 12, borderRadius: 2, backgroundColor: colors.error },
+  pressed: { opacity: 0.6 },
   composerWrap: {
     paddingHorizontal: space.md,
     paddingTop: space.sm,
@@ -224,36 +289,4 @@ const styles = StyleSheet.create({
     gap: space.sm,
   },
   buttonSpacer: { flex: 1 },
-  thumbStrip: { backgroundColor: colors.inputBg, borderTopWidth: 1, borderTopColor: colors.divider },
-  thumbStripContent: { padding: space.sm, gap: space.sm },
-  thumbWrap: { width: 60, height: 60 },
-  thumb: { width: 60, height: 60, borderRadius: 8, borderWidth: 1, borderColor: colors.border },
-  fileChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    height: 60,
-    maxWidth: 190,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-  },
-  fileMeta: { flexShrink: 1 },
-  fileName: { color: colors.textBody, fontSize: font.small, fontFamily: mono },
-  fileSize: { color: colors.textFaint, fontSize: font.tiny, fontFamily: mono, marginTop: 2 },
-  thumbRemove: {
-    position: 'absolute',
-    top: -6,
-    right: -6,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: '#000',
-    borderWidth: 1,
-    borderColor: colors.borderStrong,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
 });

@@ -60,6 +60,14 @@ export function apiGet<T>(path: string): Promise<T> {
   return send<T>(path);
 }
 
+// DELETE or PATCH (with an optional JSON body).
+export function apiSend<T>(path: string, method: 'DELETE' | 'PATCH', body?: unknown): Promise<T> {
+  return send<T>(path, {
+    method,
+    ...(body !== undefined && { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  });
+}
+
 export function apiPost<T>(path: string, body: unknown): Promise<T> {
   return send<T>(path, {
     method: 'POST',

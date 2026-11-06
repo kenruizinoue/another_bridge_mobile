@@ -28,6 +28,7 @@ export function workingLabel({
   // Queued messages waiting for the turn ahead of them to start, for the
   // terminal tab to finish, or for a free slot under the bridge's cap.
   if (queued > 0 && !sending && !live) {
+    if (held === 'paused') return `stopped, ${queued} queued`;
     if (held === 'terminal') return `${queued} queued until the Mac terminal is done…`;
     if (held === 'limit') {
       return heldBy.length > 0
@@ -62,6 +63,7 @@ export default function ChatStatusBar({
   heldBy = [],
   terminal = null,
   onSendAnyway,
+  showQueueList = true,
 }: {
   queued: string[];
   sending: boolean;
@@ -74,11 +76,12 @@ export default function ChatStatusBar({
   heldBy?: string[];
   terminal?: TerminalInfo | null;
   onSendAnyway?: () => void;
+  showQueueList?: boolean; // false when QueueTray shows the queue (1.9.0)
 }) {
   const waiting = queued.length > 0 && !!held && !sending && !live;
   return (
     <>
-      {queued.length > 0 ? (
+      {showQueueList && queued.length > 0 ? (
         <View style={styles.queueList}>
           {queued.map((m, i) => (
             <Text key={i} style={styles.queueItem} numberOfLines={1}>

@@ -4,6 +4,73 @@ All notable changes to this project are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.9.0] - 2026-11-05
+
+### Added
+
+- While Claude works, typing shows a Send switch: **Now** puts the
+  message into the running turn (Claude reads it at its next step, to
+  update or take back what you asked), **After this turn** queues it as
+  before, with a clock on the send button. It goes back to Now after
+  each send. When the turn can't take messages (a Mac tab is working,
+  the queue is stopped), Now is greyed out with the reason.
+- Messages sent into the turn show above the composer as "sending",
+  "sent into this turn", then "Claude got it".
+- A Stop button replaces send while Claude works and the input is
+  empty. Queued messages then wait, with Run queue.
+- Queued messages are a tray with Send now and Delete on each (long-press
+  to edit), Send all now for two or more, and Undo for 5 seconds after a
+  delete. Send now past a working Mac tab asks first. This replaces Send
+  anyway.
+- Needs another_bridge ticket 26.
+
+## [1.8.1] - 2026-11-05
+
+### Changed
+
+- The New session screen is a top-aligned form: the first message is the
+  main field (focused on open), with labeled Photos, Files and Dictate
+  buttons under it, then the optional name. Start sits in the header, so
+  it stays reachable above the keyboard. In 1.8.0 the chat composer sat
+  at the bottom and floated to the middle of the screen with the
+  keyboard, with a bare + button and a "continues this session" hint.
+- The conversation list header has two rows: Settings, version, Files and
+  a filled + on top, the large "Conversations" title below, so nothing is
+  squeezed on a 428-point wide phone.
+- The photo and file strip is one shared component (`AttachmentStrip`)
+  for the composer and the new-session form.
+
+## [1.8.0] - 2026-11-05
+
+### Added
+
+- A + button on the conversation list with two choices. "New session"
+  opens a form for an optional name and the first message (text,
+  dictation, photos or files). Once the session exists on the Mac the
+  chat opens and shows the first reply streaming in. "Resume on Mac"
+  turns the list into a picker: tap a session and it opens in a new
+  iTerm tab on the Mac (a Terminal window when iTerm isn't installed).
+- An Open on Mac button in the chat header does the same for the open
+  chat. If a phone turn is still running in the session, the tab opens
+  when that turn ends, so two copies never write the same session.
+- Needs another_bridge with tickets 22 to 25 (`/sessions/new/stream`,
+  `/sessions/{id}/open-on-mac`).
+
+### Fixed
+
+- Card times now say when the session was last really used, and the
+  list is ordered by it (bridge ticket 22). Sessions open in a Mac tab no
+  longer show "15 min ago" days after their last message.
+- Cards show names set with `/rename` or `claude --name` (bridge ticket
+  23).
+
+## [1.7.2] - 2026-10-30
+
+### Changed
+
+- Same code as 1.7.1, rebuilt and reinstalled because the free signing
+  profile expired and the app stopped opening.
+
 ## [1.7.1] - 2026-10-27
 
 ### Added

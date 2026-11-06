@@ -1,6 +1,6 @@
 // Session endpoints. Thin wrappers over apiGet that own their URL/query
 // construction and return already-typed data to the screens.
-import { apiGet, apiPost, streamSSE } from './client';
+import { apiGet, apiPost, apiSend, streamSSE } from './client';
 import type { MessagesPage, SessionCard, TerminalInfo, ToolRef } from './types';
 
 // A base64 image to attach (raw base64, no data: prefix).
@@ -13,7 +13,15 @@ export type OutgoingFile = { name: string; data: string };
 
 // Why queued messages wait: the session is working in a terminal tab on
 // the Mac, or the bridge's cap on phone turns running at once is reached.
-export type HoldReason = 'terminal' | 'limit';
+export type HoldReason = 'terminal' | 'limit' | 'paused'; // paused = after Stop
+
+// A queued message with its id, for Send now, Delete and Edit.
+export type QueueItem = { id: string; preview: string; text: string };
+
+// A message sent into the running turn: `sent` = written to it, `read` =
+// Claude picked it up at its next step.
+export type SteerState = 'sending' | 'sent' | 'read';
+export type Steer = { id: string; text: string; state: SteerState };
 
 export type ResumeStatus = {
   running: boolean;
@@ -25,6 +33,13 @@ export type ResumeStatus = {
   // them instead of a vague "other turns".
   held_by?: { session_id: string; title: string }[];
   terminal?: TerminalInfo | null;
+  // An "Open on Mac" tap waiting for this session's phone turn to end.
+  opening_on_mac?: boolean; // missing on bridges before 1.8.0
+  // Missing on bridges before 1.9.0:
+  queue_items?: QueueItem[];
+  can_inject?: boolean; // the running turn can take a message now
+  steers?: { id: string; text: string; state: 'sent' | 'read' }[];
+  paused?: boolean; // the queue waits after Stop
 };
 
 // The catch-up signal: is a resume running or are messages queued on the
@@ -68,6 +83,8 @@ export type StreamHandlers = {
   // was sent and Claude may still be finishing on the Mac
   onSpeech?: (speech: string) => void; // voice turns only: the schema-
   // guaranteed spoken summary, emitted just before `done`
+  onSteer?: (id: string, state: SteerState) => void; // a message sent
+  // into this turn was written (`sent`) or read by Claude (`read`)
   onQueued?: (reason: HoldReason) => void; // the bridge held the message
   // in its queue instead of running it (a working terminal tab or the
   // turn cap); `done` follows, and the queue runs it later
@@ -98,6 +115,7 @@ export function resumeSessionStream(
       if (ev === 'text') h.onText(payload.chunk ?? '');
       else if (ev === 'tool') h.onTool(toTool(payload));
       else if (ev === 'speech') h.onSpeech?.(payload.speech ?? '');
+      else if (ev === 'steer' && payload.id) h.onSteer?.(String(payload.id), payload.state === 'read' ? 'read' : 'sent');
       else if (ev === 'queued') h.onQueued?.(payload.reason === 'limit' ? 'limit' : 'terminal');
       else if (ev === 'done') {
         gotDone = true;
@@ -118,6 +136,7 @@ export function resumeSessionStream(
 export type AttachHandlers = {
   onText: (chunk: string) => void;
   onTool: (tool: ToolRef) => void;
+  onSteer?: (id: string, state: SteerState) => void;
   onDone: () => void; // the turn ended, or nothing was running
   onDropped: (status?: number) => void; // ended without done; 404 = a
   // bridge without /resume/attach
@@ -134,6 +153,7 @@ export function attachResumeStream(sessionId: string, h: AttachHandlers): () => 
     (ev, payload) => {
       if (ev === 'text') h.onText(payload.chunk ?? '');
       else if (ev === 'tool') h.onTool(toTool(payload));
+      else if (ev === 'steer' && payload.id) h.onSteer?.(String(payload.id), payload.state === 'read' ? 'read' : 'sent');
       else if (ev === 'done') {
         gotDone = true;
         h.onDone();
@@ -160,4 +180,110 @@ export async function fetchMessages(
   const q = new URLSearchParams({ limit: String(limit) });
   if (before != null) q.set('before', String(before));
   return apiGet<MessagesPage>(`/sessions/${sessionId}/messages?${q}`);
+}
+
+export type NewSessionHandlers = {
+  // The bridge picked the new session's id and the session exists on the
+  // Mac. The first turn keeps running there; open the chat to watch it.
+  onSession: (session: { session_id: string; cwd: string; name: string | null }) => void;
+  onError: (message: string) => void; // couldn't start (turn cap, bridge error)
+};
+
+// Start a brand-new session from the phone. Only waits for the `session`
+// event: the caller cancels the stream once it has the id and opens the
+// chat, which attaches to the running first turn. Returns a cancel function.
+export function newSessionStream(
+  message: string,
+  name: string,
+  h: NewSessionHandlers,
+  images: OutgoingImage[] = [],
+  files: OutgoingFile[] = [],
+  force = false,
+): () => void {
+  let settled = false;
+  return streamSSE(
+    '/sessions/new/stream',
+    { message, name, images, files, ...(force && { force: true }) },
+    (ev, payload) => {
+      if (settled) return;
+      if (ev === 'session' && payload.session_id) {
+        settled = true;
+        h.onSession({
+          session_id: String(payload.session_id),
+          cwd: String(payload.cwd ?? ''),
+          name: payload.name ?? null,
+        });
+      } else if (ev === 'error') {
+        settled = true;
+        h.onError(payload.message ?? 'could not start the session');
+      }
+    },
+    (err) => {
+      if (settled) return;
+      settled = true;
+      h.onError(err ?? 'the bridge closed the stream before the session started');
+    },
+  );
+}
+
+// What "Open on Mac" did: opened a tab now, will open one when the phone
+// turn writing the session ends, or found it already open in a tab.
+export type OpenOnMacStatus = 'opened' | 'waiting' | 'already_open';
+
+export type OpenOnMacResult = { ok: boolean; status: OpenOnMacStatus; app: 'iterm' | 'terminal' };
+
+// Open the session in a new iTerm2 tab on the Mac (Terminal when iTerm2
+// isn't installed), running `claude --resume` in its folder.
+export async function openOnMac(sessionId: string): Promise<OpenOnMacResult> {
+  return apiPost<OpenOnMacResult>(`/sessions/${sessionId}/open-on-mac`, {});
+}
+
+// ── Talking to a running turn and handling the queue (1.9.0) ─────────
+
+// Send a message INTO the running turn: Claude reads it at its next step.
+// Rejects (the bridge's 409) when no running turn can take it; the
+// caller queues it instead.
+export async function injectMessage(
+  sessionId: string,
+  message: string,
+  images: OutgoingImage[] = [],
+  files: OutgoingFile[] = [],
+): Promise<{ ok: boolean; status: 'sent_mid_turn'; id: string }> {
+  return apiPost(`/sessions/${sessionId}/resume/inject`, { message, images, files });
+}
+
+// Stop the running turn. Queued messages wait (paused) until runQueue.
+export async function stopTurn(sessionId: string): Promise<{ stopped: boolean; paused: boolean }> {
+  return apiPost(`/sessions/${sessionId}/resume/stop`, {});
+}
+
+export async function runQueue(sessionId: string): Promise<{ ok: boolean }> {
+  return apiPost(`/sessions/${sessionId}/resume/queue/run`, {});
+}
+
+// What Send now did: into the running turn, next in line (a turn that
+// can't take messages runs), or starting now.
+export type SendNowStatus = 'sent_mid_turn' | 'next' | 'starting';
+
+export async function sendQueuedNow(sessionId: string, itemId: string): Promise<{ status: SendNowStatus }> {
+  return apiPost(`/sessions/${sessionId}/resume/queue/${itemId}/send-now`, {});
+}
+
+export async function sendAllQueuedNow(
+  sessionId: string,
+): Promise<{ sent: { id: string; status: SendNowStatus }[] }> {
+  return apiPost(`/sessions/${sessionId}/resume/queue/send-all-now`, {});
+}
+
+export async function deleteQueued(sessionId: string, itemId: string): Promise<{ removed: string; position: number }> {
+  return apiSend(`/sessions/${sessionId}/resume/queue/${itemId}`, 'DELETE');
+}
+
+// Undo a delete: the message goes back where it was.
+export async function restoreQueued(sessionId: string, itemId: string): Promise<{ restored: string }> {
+  return apiPost(`/sessions/${sessionId}/resume/queue/${itemId}/restore`, {});
+}
+
+export async function editQueued(sessionId: string, itemId: string, message: string): Promise<{ id: string }> {
+  return apiSend(`/sessions/${sessionId}/resume/queue/${itemId}`, 'PATCH', { message });
 }

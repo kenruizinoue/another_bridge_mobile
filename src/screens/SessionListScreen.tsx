@@ -1,7 +1,11 @@
+import { Ionicons } from '@expo/vector-icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ActionSheetIOS,
   ActivityIndicator,
+  Alert,
   AppState,
+  Platform,
   FlatList,
   Pressable,
   RefreshControl,
@@ -17,16 +21,46 @@ import type { SessionCard as Card } from '../api/types';
 import GlassIconButton from '../components/GlassIconButton';
 import SessionCard from '../components/SessionCard';
 import SettingsSheet from '../components/SettingsSheet';
+import useOpenOnMac from '../hooks/useOpenOnMac';
 import { colors, font, mono, space } from '../theme';
 
-// The card list. Tapping a card calls onOpen(card).
+// The card list. Tapping a card calls onOpen(card). The + button starts a
+// new session (onNew) or switches to "Resume on Mac", where tapping a card
+// opens that session in a new terminal tab on the Mac instead.
 export default function SessionListScreen({
   onOpen,
   onOpenFiles,
+  onNew,
 }: {
   onOpen: (card: Card) => void;
   onOpenFiles?: () => void;
+  onNew?: () => void;
 }) {
+  const [pickForMac, setPickForMac] = useState(false);
+  const mac = useOpenOnMac();
+  const openMenu = () => {
+    const choose = (i: number) => {
+      if (i === 0) onNew?.();
+      else if (i === 1) setPickForMac(true);
+    };
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: ['New session', 'Resume on Mac', 'Cancel'], cancelButtonIndex: 2 },
+        choose,
+      );
+    } else {
+      Alert.alert('Start', undefined, [
+        { text: 'New session', onPress: () => choose(0) },
+        { text: 'Resume on Mac', onPress: () => choose(1) },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    }
+  };
+  const onCardPress = (card: Card) => {
+    if (!pickForMac) return onOpen(card);
+    setPickForMac(false);
+    void mac.open(card.session_id, card.title);
+  };
   const [sessions, setSessions] = useState<Card[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -68,22 +102,59 @@ export default function SessionListScreen({
 
   return (
     <SafeAreaView style={styles.screen}>
-      <View style={styles.header}>
+      {/* iOS large-title layout: the buttons get their own row, the title
+          the full width below, so nothing is squeezed on a narrow phone. */}
+      <View style={styles.toolbar}>
         <GlassIconButton
           name="settings-outline"
           onPress={() => setShowSettings(true)}
-          size={34}
+          size={36}
           testID="open-settings"
           label="Settings"
         />
-        <Text style={styles.headerTitle}>Conversations</Text>
-        {!loading && !error ? <Text style={styles.headerCount}>{sessions.length}</Text> : null}
         <View style={styles.headerSpacer} />
         <Text style={styles.version}>v{Constants.expoConfig?.version ?? '?'}</Text>
         {onOpenFiles ? (
-          <GlassIconButton name="folder-outline" onPress={onOpenFiles} size={34} testID="open-files" label="Files" />
+          <GlassIconButton name="folder-outline" onPress={onOpenFiles} size={36} testID="open-files" label="Files" />
+        ) : null}
+        {onNew ? (
+          <GlassIconButton
+            name="add"
+            onPress={openMenu}
+            filled
+            size={36}
+            testID="open-new-menu"
+            label="New session or resume on Mac"
+          />
         ) : null}
       </View>
+      <View style={styles.titleRow}>
+        <Text style={styles.headerTitle} numberOfLines={1}>
+          Conversations
+        </Text>
+        {!loading && !error ? <Text style={styles.headerCount}>{sessions.length}</Text> : null}
+      </View>
+
+      {pickForMac ? (
+        <View style={styles.pickBanner} testID="mac-pick-banner">
+          <Ionicons name="desktop-outline" size={16} color={colors.accent} />
+          <Text style={styles.pickText}>Tap a session to open it in a new tab on your Mac.</Text>
+          <Pressable
+            testID="mac-pick-cancel"
+            accessibilityRole="button"
+            onPress={() => setPickForMac(false)}
+            hitSlop={8}
+          >
+            <Text style={styles.pickCancel}>Cancel</Text>
+          </Pressable>
+        </View>
+      ) : null}
+      {mac.opening ? (
+        <View style={styles.pickBanner} testID="mac-opening">
+          <ActivityIndicator color={colors.accent} />
+          <Text style={styles.pickText}>Opening it on the Mac…</Text>
+        </View>
+      ) : null}
 
       <SettingsSheet visible={showSettings} onClose={() => setShowSettings(false)} />
 
@@ -121,7 +192,7 @@ export default function SessionListScreen({
           testID="session-list"
           data={sessions}
           keyExtractor={(item) => item.session_id}
-          renderItem={({ item }) => <SessionCard card={item} onPress={onOpen} />}
+          renderItem={({ item }) => <SessionCard card={item} onPress={onCardPress} />}
           contentContainerStyle={[styles.listContent, sessions.length === 0 && styles.grow]}
           alwaysBounceVertical
           refreshControl={refreshControl}
@@ -138,15 +209,22 @@ export default function SessionListScreen({
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
-  header: {
+  toolbar: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.md,
     paddingHorizontal: space.xl,
     paddingTop: space.sm,
+  },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: space.md,
+    paddingHorizontal: space.xl,
+    paddingTop: space.sm,
     paddingBottom: space.md,
   },
-  headerTitle: { color: colors.textPrimary, fontSize: 26, fontWeight: '700' },
+  headerTitle: { flexShrink: 1, color: colors.textPrimary, fontSize: 30, fontWeight: '700' },
   headerCount: { color: colors.accent, fontSize: font.title, fontWeight: '600' },
   headerSpacer: { flex: 1 },
   version: { color: colors.textFaint, fontSize: font.tiny, fontFamily: mono },
@@ -165,4 +243,19 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(94,177,255,0.35)',
   },
   retryText: { color: colors.accent, fontSize: font.meta, fontFamily: mono },
+  pickBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    marginHorizontal: space.xl,
+    marginBottom: space.sm,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(94,177,255,0.35)',
+    backgroundColor: 'rgba(13,19,26,0.92)',
+  },
+  pickText: { flex: 1, color: colors.textPrimary, fontSize: font.meta },
+  pickCancel: { color: colors.accent, fontSize: font.meta, fontFamily: mono },
 });

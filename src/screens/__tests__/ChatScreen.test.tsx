@@ -14,6 +14,7 @@ import type { MessagesPage, SessionCard, Turn } from '../../api/types';
 
 jest.mock('../../api/sessions', () => ({
   enqueueResume: jest.fn(),
+  openOnMac: jest.fn(),
   fetchMessages: jest.fn(),
   resumeSessionStream: jest.fn(),
   resumeStatus: jest.fn(),
@@ -141,6 +142,35 @@ it('calls onBack from the header back button', async () => {
 
   await fireEvent.press(screen.getByTestId('chat-back'));
   expect(onBack).toHaveBeenCalledTimes(1);
+});
+
+it('opens the session on the Mac from the header and says what happened', async () => {
+  const { openOnMac } = require('../../api/sessions');
+  openOnMac.mockResolvedValue({ ok: true, status: 'waiting', app: 'iterm' });
+  const alert = jest.spyOn(require('react-native').Alert, 'alert').mockImplementation(() => {});
+  fetchMessagesMock.mockResolvedValue(page([]));
+  await render(<ChatScreen session={session} onBack={jest.fn()} />);
+  await waitFor(() => expect(fetchMessagesMock).toHaveBeenCalled());
+
+  await fireEvent.press(screen.getByTestId('chat-open-on-mac'));
+  await waitFor(() => expect(openOnMac).toHaveBeenCalledWith(session.session_id));
+  await waitFor(() => expect(alert).toHaveBeenCalledWith('Open on Mac', expect.stringMatching(/when that turn ends/)));
+  alert.mockRestore();
+});
+
+it('shows why opening on the Mac failed', async () => {
+  const { openOnMac } = require('../../api/sessions');
+  openOnMac.mockRejectedValue(new Error('osascript exited 1: Not authorized (-1743)'));
+  const alert = jest.spyOn(require('react-native').Alert, 'alert').mockImplementation(() => {});
+  fetchMessagesMock.mockResolvedValue(page([]));
+  await render(<ChatScreen session={session} onBack={jest.fn()} />);
+  await waitFor(() => expect(fetchMessagesMock).toHaveBeenCalled());
+
+  await fireEvent.press(screen.getByTestId('chat-open-on-mac'));
+  await waitFor(() =>
+    expect(alert).toHaveBeenCalledWith("Couldn't open it on the Mac", 'osascript exited 1: Not authorized (-1743)'),
+  );
+  alert.mockRestore();
 });
 
 it('sends a typed message and shows the streaming reply until done', async () => {

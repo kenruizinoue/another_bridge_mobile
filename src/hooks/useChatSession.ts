@@ -6,15 +6,26 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import {
   attachResumeStream,
+  deleteQueued as apiDeleteQueued,
+  editQueued as apiEditQueued,
   enqueueResume,
   fetchMessages,
+  injectMessage,
   releaseQueue,
+  restoreQueued,
   resumeSessionStream,
   resumeStatus,
+  runQueue as apiRunQueue,
+  sendAllQueuedNow,
+  sendQueuedNow,
+  stopTurn,
   type HoldReason,
   type OutgoingFile,
   type OutgoingImage,
+  type QueueItem,
   type ResumeStatus,
+  type Steer,
+  type SteerState,
 } from '../api/sessions';
 import type { MessagesPage, TerminalInfo, ToolRef, Turn } from '../api/types';
 
@@ -26,6 +37,23 @@ const CATCH_UP_INTERVALS_MS = [3000, 5000, 10000, 15000];
 // "2026/Oct/22 AnotherSystems Marketing" -> "AnotherSystems Marketing"
 const titlesOf = (s: ResumeStatus): string[] =>
   (s.held_by ?? []).map((h) => h.title.replace(/^\d{4}\/\w{3}\/\d{1,2}\s+/, ''));
+
+// How long "Deleted, Undo" stays up after deleting a queued message.
+export const UNDO_MS = 5000;
+
+// The bridge's view of the messages sent into the running turn wins, but a
+// message this phone is still sending (not on the bridge yet) stays. Once
+// no turn runs they are part of the transcript, so the list empties.
+export function mergeSteers(local: Steer[], server: ResumeStatus['steers'], running: boolean): Steer[] {
+  if (!running) return [];
+  const fromServer: Steer[] = (server ?? []).map((st) => ({ id: st.id, text: st.text, state: st.state }));
+  const known = new Set(fromServer.map((st) => st.id));
+  return [...fromServer, ...local.filter((st) => st.state === 'sending' && !known.has(st.id))];
+}
+
+// Where a message typed while Claude works goes: into the running turn
+// ("now") or the queue ("after this turn").
+export type SendMode = 'now' | 'after';
 
 export default function useChatSession(sessionId: string) {
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -57,6 +85,16 @@ export default function useChatSession(sessionId: string) {
   // Voice turns only: the schema-guaranteed spoken summary of the last
   // finished reply (null otherwise / until it lands).
   const [speech, setSpeech] = useState<string | null>(null);
+  // 1.9.0: queued messages with ids, whether the running turn can take a
+  // message, the messages sent into it, the pause after Stop, a one-line
+  // info notice, and the last deleted queued message (for Undo).
+  const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
+  const [canInject, setCanInject] = useState(false);
+  const [steers, setSteers] = useState<Steer[]>([]);
+  const [paused, setPaused] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [lastDeleted, setLastDeleted] = useState<QueueItem | null>(null);
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Kept in refs so listeners and timers see the latest without
   // re-subscribing. `inFlight` = a turn is expected to be running on the
@@ -75,6 +113,22 @@ export default function useChatSession(sessionId: string) {
   const loadedOlder = useRef(false);
   const loadingOlder = useRef(false);
   const catchUpRef = useRef<(fromPoll?: boolean) => Promise<void>>(async () => {});
+
+  // Mirror the bridge's in-flight state for this session.
+  const applyStatus = useCallback((s: ResumeStatus) => {
+    setQueued(s.queued);
+    setQueueItems(s.queue_items ?? s.queued.map((p, i) => ({ id: `legacy-${i}`, preview: p, text: p })));
+    setHeld(s.held ?? null);
+    setHeldBy(titlesOf(s));
+    setTerminal(s.terminal ?? null);
+    setCanInject(!!s.can_inject);
+    setPaused(!!s.paused);
+    setSteers((local) => mergeSteers(local, s.steers, s.running));
+  }, []);
+
+  const markSteer = useCallback((id: string, state: SteerState) => {
+    setSteers((list) => list.map((st) => (st.id === id ? { ...st, state } : st)));
+  }, []);
 
   // Show the latest page, keeping any older pages already loaded with
   // loadOlder so a catch-up never yanks the reader back to the bottom page.
@@ -184,6 +238,7 @@ export default function useChatSession(sessionId: string) {
     attachCancel.current = attachResumeStream(sessionId, {
       onText: (chunk) => mine() && setStreamText((t) => t + chunk),
       onTool: (tool) => mine() && setStreamTools((ts) => [...ts, tool]),
+      onSteer: (id, state) => mine() && markSteer(id, state),
       onDone: () => {
         if (!mine()) return;
         attachCancel.current = null;
@@ -198,7 +253,7 @@ export default function useChatSession(sessionId: string) {
         schedule(); // the next pass re-attaches if the turn still runs
       },
     });
-  }, [sessionId, schedule, stopAttach]);
+  }, [sessionId, schedule, stopAttach, markSteer]);
 
   // Catch-up: the Mac's transcript is the source of truth. Each pass reads
   // the "is a resume still running?" signal + the latest turns. While a
@@ -214,12 +269,7 @@ export default function useChatSession(sessionId: string) {
         // catch-up again. Only mirror the server queue meanwhile.
         try {
           const s = await resumeStatus(sessionId);
-          if (mounted.current) {
-            setQueued(s.queued);
-            setHeld(s.held ?? null);
-            setHeldBy(titlesOf(s));
-            setTerminal(s.terminal ?? null);
-          }
+          if (mounted.current) applyStatus(s);
         } catch {
           // the stream itself reports trouble
         }
@@ -231,10 +281,7 @@ export default function useChatSession(sessionId: string) {
         const page = await fetchMessages(sessionId);
         if (!mounted.current) return;
         applyPage(page);
-        setQueued(status.queued);
-        setHeld(status.held ?? null);
-        setHeldBy(titlesOf(status));
-        setTerminal(status.terminal ?? null);
+        applyStatus(status);
         setSendError(null);
         setOffline(false);
       } catch {
@@ -266,12 +313,14 @@ export default function useChatSession(sessionId: string) {
         clearLiveView();
         setSyncing(false);
         setQueued([]);
+        setQueueItems([]);
+        setSteers([]);
         // A terminal tab is working on this session: keep pulling the
         // transcript so its replies show up here too.
         if (status.terminal?.active) schedule();
       }
     },
-    [sessionId, applyPage, clearLiveView, follow, schedule, stopAttach, stopPolling],
+    [sessionId, applyPage, applyStatus, clearLiveView, follow, schedule, stopAttach, stopPolling],
   );
   catchUpRef.current = catchUp;
 
@@ -329,17 +378,36 @@ export default function useChatSession(sessionId: string) {
       images: OutgoingImage[],
       files: OutgoingFile[],
       restore: () => void,
-      options?: { voice?: boolean },
+      options?: { voice?: boolean; mode?: SendMode },
     ) => {
       if (!message && images.length === 0 && files.length === 0) return;
       setSendError(null);
+      setNotice(null);
       setSpeech(null);
       const voice = options?.voice ?? false;
+      const mode = options?.mode ?? 'after';
 
       const preview = message || `📎 ${images.length + files.length} attachment(s)`;
       // A terminal tab working on this session counts as busy: the bridge
       // queues the message until the tab is done, never a second copy.
       const busy = sending || syncing || live || queued.length > 0 || !!terminal?.active;
+      // "Now": into the running turn. If the turn can't take it (it is
+      // ending, or it is a voice turn), it falls back to the queue.
+      if (busy && mode === 'now' && !voice && (canInject || sending || live)) {
+        const tempId = `sending-${Date.now()}`;
+        setSteers((list) => [...list, { id: tempId, text: preview, state: 'sending' }]);
+        inFlight.current = true;
+        try {
+          const r = await injectMessage(sessionId, message, images, files);
+          if (!mounted.current) return;
+          setSteers((list) => list.map((st) => (st.id === tempId ? { id: r.id, text: preview, state: 'sent' } : st)));
+          return;
+        } catch {
+          if (!mounted.current) return;
+          setSteers((list) => list.filter((st) => st.id !== tempId));
+          setNotice('The turn could not take it, so it is queued as the next message.');
+        }
+      }
       if (busy) {
         setQueued((q) => [...q, preview]); // optimistic; status polls reconcile
         inFlight.current = true;
@@ -402,6 +470,7 @@ export default function useChatSession(sessionId: string) {
           onText: (chunk) => mine() && setStreamText((t) => t + chunk),
           onTool: (tool) => mine() && setStreamTools((ts) => [...ts, tool]),
           onSpeech: (s) => mine() && setSpeech(s),
+          onSteer: (id, state) => mine() && markSteer(id, state),
           onQueued: (reason) => {
             if (!mine()) return;
             // The bridge queued it instead (a terminal tab started working,
@@ -442,7 +511,7 @@ export default function useChatSession(sessionId: string) {
         voice,
       );
     },
-    [sending, syncing, live, queued.length, terminal, sessionId, catchUp, stopAttach],
+    [sending, syncing, live, queued.length, terminal, canInject, sessionId, catchUp, stopAttach],
   );
 
   // "Send anyway": run the queued messages now instead of waiting for the
@@ -458,6 +527,102 @@ export default function useChatSession(sessionId: string) {
     void catchUp();
   }, [sessionId, catchUp]);
 
+  // Run an action against the bridge, show its error, then re-sync.
+  const act = useCallback(
+    async <T,>(fn: () => Promise<T>): Promise<T | null> => {
+      setSendError(null);
+      try {
+        const r = await fn();
+        if (mounted.current) void catchUp();
+        return r;
+      } catch (e) {
+        // Re-sync first: a successful catch-up clears sendError, and this
+        // error must stay on screen.
+        if (mounted.current) await catchUp();
+        if (mounted.current) setSendError(e instanceof Error ? e.message : String(e));
+        return null;
+      }
+    },
+    [catchUp],
+  );
+
+  // Stop the running turn, like Esc in the terminal. Queued messages wait
+  // until runQueue, so they can be fixed first.
+  const stop = useCallback(() => act(() => stopTurn(sessionId)), [act, sessionId]);
+  const resumeQueue = useCallback(() => act(() => apiRunQueue(sessionId)), [act, sessionId]);
+
+  const noteSent = useCallback((item: QueueItem | undefined, status: string) => {
+    if (status === 'sent_mid_turn' && item) {
+      setSteers((list) => [...list, { id: item.id, text: item.preview, state: 'sent' }]);
+    } else if (status === 'next') {
+      setNotice("This turn can't take messages. It runs as soon as the turn ends.");
+    }
+  }, []);
+
+  // A queued message, now: into the running turn when it can take it,
+  // else first in line past any hold.
+  const sendNow = useCallback(
+    async (id: string) => {
+      const item = queueItems.find((q) => q.id === id);
+      setQueueItems((items) => items.filter((q) => q.id !== id));
+      const r = await act(() => sendQueuedNow(sessionId, id));
+      if (r && mounted.current) noteSent(item, r.status);
+    },
+    [act, noteSent, queueItems, sessionId],
+  );
+
+  const sendAllNow = useCallback(async () => {
+    const items = queueItems;
+    setQueueItems([]);
+    const r = await act(() => sendAllQueuedNow(sessionId));
+    if (r && mounted.current) for (const s of r.sent) noteSent(items.find((q) => q.id === s.id), s.status);
+  }, [act, noteSent, queueItems, sessionId]);
+
+  // Delete a queued message; Undo puts it back within UNDO_MS.
+  const deleteQueued = useCallback(
+    async (id: string) => {
+      const item = queueItems.find((q) => q.id === id);
+      setQueueItems((items) => items.filter((q) => q.id !== id));
+      setQueued((q) => {
+        const i = item ? q.indexOf(item.preview) : -1;
+        return i === -1 ? q : [...q.slice(0, i), ...q.slice(i + 1)];
+      });
+      const r = await act(() => apiDeleteQueued(sessionId, id));
+      if (!r || !item || !mounted.current) return;
+      if (undoTimer.current) clearTimeout(undoTimer.current);
+      setLastDeleted(item);
+      undoTimer.current = setTimeout(() => {
+        if (mounted.current) setLastDeleted(null);
+      }, UNDO_MS);
+    },
+    [act, queueItems, sessionId],
+  );
+
+  const undoDelete = useCallback(async () => {
+    const item = lastDeleted;
+    if (!item) return;
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    setLastDeleted(null);
+    await act(() => restoreQueued(sessionId, item.id));
+  }, [act, lastDeleted, sessionId]);
+
+  const editQueued = useCallback(
+    async (id: string, text: string) => {
+      const clean = text.trim();
+      if (!clean) return;
+      setQueueItems((items) => items.map((q) => (q.id === id ? { ...q, text: clean, preview: clean } : q)));
+      await act(() => apiEditQueued(sessionId, id, clean));
+    },
+    [act, sessionId],
+  );
+
+  useEffect(
+    () => () => {
+      if (undoTimer.current) clearTimeout(undoTimer.current);
+    },
+    [],
+  );
+
   // On open (mount: a fresh app launch or coming back to the chat after
   // leaving), load the conversation AND ask the server whether a resume
   // is still running for this session. That state lives on the bridge,
@@ -471,12 +636,9 @@ export default function useChatSession(sessionId: string) {
       try {
         const status = await resumeStatus(sessionId);
         if (cancelled) return;
-        setTerminal(status.terminal ?? null);
+        applyStatus(status);
         if (status.running || status.queue_count > 0) {
           inFlight.current = true;
-          setQueued(status.queued);
-          setHeld(status.held ?? null);
-          setHeldBy(titlesOf(status));
           void catchUp();
         } else if (status.terminal?.active) {
           void catchUp(); // follow the terminal tab's replies
@@ -488,7 +650,7 @@ export default function useChatSession(sessionId: string) {
     return () => {
       cancelled = true;
     };
-  }, [applyLatest, catchUp, sessionId]);
+  }, [applyLatest, applyStatus, catchUp, sessionId]);
 
   return {
     // conversation
@@ -512,6 +674,20 @@ export default function useChatSession(sessionId: string) {
     heldBy,
     terminal,
     sendAnyway,
+    // 1.9.0: talk to the running turn and handle the queue
+    queueItems,
+    canInject,
+    steers,
+    paused,
+    notice,
+    lastDeleted,
+    stop,
+    resumeQueue,
+    sendNow,
+    sendAllNow,
+    deleteQueued,
+    undoDelete,
+    editQueued,
     streamText,
     streamTools,
     speech,

@@ -1,10 +1,10 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { AppState } from 'react-native';
+import { ActionSheetIOS, Alert, AppState } from 'react-native';
 import SessionListScreen from '../SessionListScreen';
-import { fetchSessions } from '../../api/sessions';
+import { fetchSessions, openOnMac } from '../../api/sessions';
 import type { SessionCard } from '../../api/types';
 
-jest.mock('../../api/sessions', () => ({ fetchSessions: jest.fn() }));
+jest.mock('../../api/sessions', () => ({ fetchSessions: jest.fn(), openOnMac: jest.fn() }));
 jest.mock('react-native-safe-area-context', () =>
   require('react-native-safe-area-context/jest/mock').default,
 );
@@ -117,4 +117,56 @@ it('the folder button opens Files', async () => {
   await render(<SessionListScreen onOpen={jest.fn()} onOpenFiles={onOpenFiles} />);
   await fireEvent.press(await screen.findByTestId('open-files'));
   expect(onOpenFiles).toHaveBeenCalledTimes(1);
+});
+
+// ── + menu: new session or resume on Mac ──────────────────────────────
+
+function chooseFromMenu(index: number) {
+  const sheet = jest
+    .spyOn(ActionSheetIOS, 'showActionSheetWithOptions')
+    .mockImplementation((_opts, cb) => cb(index));
+  return sheet;
+}
+
+it('the + menu starts a new session', async () => {
+  fetchSessionsMock.mockResolvedValue([card('a', 'Fix the composer')]);
+  const onNew = jest.fn();
+  await render(<SessionListScreen onOpen={jest.fn()} onNew={onNew} />);
+  const sheet = chooseFromMenu(0);
+  await fireEvent.press(await screen.findByTestId('open-new-menu'));
+  expect(sheet.mock.calls[0][0].options).toEqual(['New session', 'Resume on Mac', 'Cancel']);
+  expect(onNew).toHaveBeenCalled();
+  sheet.mockRestore();
+});
+
+it('resume on Mac opens the tapped session on the Mac instead of the chat', async () => {
+  const openOnMacMock = openOnMac as jest.MockedFunction<typeof openOnMac>;
+  openOnMacMock.mockResolvedValue({ ok: true, status: 'opened', app: 'iterm' });
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+  fetchSessionsMock.mockResolvedValue([card('a', 'Fix the composer')]);
+  const onOpen = jest.fn();
+  await render(<SessionListScreen onOpen={onOpen} onNew={jest.fn()} />);
+  const sheet = chooseFromMenu(1);
+  await fireEvent.press(await screen.findByTestId('open-new-menu'));
+  expect(screen.getByTestId('mac-pick-banner')).toBeOnTheScreen();
+
+  await fireEvent.press(screen.getByTestId('session-card-a'));
+  await waitFor(() => expect(openOnMacMock).toHaveBeenCalledWith('a'));
+  expect(onOpen).not.toHaveBeenCalled();
+  await waitFor(() => expect(alert).toHaveBeenCalledWith('Fix the composer', 'Opened in a new iTerm tab on your Mac.'));
+  expect(screen.queryByTestId('mac-pick-banner')).toBeNull();
+  sheet.mockRestore();
+  alert.mockRestore();
+});
+
+it('cancelling resume on Mac goes back to opening chats', async () => {
+  fetchSessionsMock.mockResolvedValue([card('a', 'Fix the composer')]);
+  const onOpen = jest.fn();
+  await render(<SessionListScreen onOpen={onOpen} onNew={jest.fn()} />);
+  const sheet = chooseFromMenu(1);
+  await fireEvent.press(await screen.findByTestId('open-new-menu'));
+  await fireEvent.press(screen.getByTestId('mac-pick-cancel'));
+  await fireEvent.press(screen.getByTestId('session-card-a'));
+  expect(onOpen).toHaveBeenCalled();
+  sheet.mockRestore();
 });

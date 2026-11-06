@@ -99,6 +99,9 @@ the bundle. After this pass:
 | 24 | Files view | Done (2026-10-24) |
 | 25 | Terminal tabs, held messages, Send anyway | Done (2026-10-27) |
 | 26 | PDF viewer in Files | Done (2026-10-27) |
+| 27 | New session from the phone, Open on Mac | Done (2026-11-05) |
+| 28 | Face ID lock mode | Todo |
+| 29 | Talk to a running turn, queue actions | Done (2026-11-05) |
 
 ## Phase 1: no secrets, safe by default
 
@@ -697,6 +700,91 @@ Acceptance criteria:
 
 - 308 tests pass and the typecheck is clean. Version 1.6.0. Installed only
   when Ken says so, together with the bridge restart.
+
+## Phase 6: sessions between the phone and the Mac
+
+### Ticket 27 - New session from the phone, Open on Mac
+
+Objective:
+
+- Ken starts a session from the phone and continues it on the Mac, and
+  opens any session in a new Mac terminal tab from the phone (bridge
+  ticket 25).
+
+TDD work:
+
+- `src/lib/macSessions.ts`: the message for each Open on Mac result and
+  the card for a session the phone just started.
+- `useNewSession`: starts `/sessions/new/stream`, hands a card over on the
+  `session` event and closes the stream (the first turn keeps running and
+  the chat attaches to it), shows errors and gives the message back, one
+  start at a time, closes on unmount.
+- `useOpenOnMac`: calls `/open-on-mac` and says what happened in an alert.
+- Screens: the + menu (New session, Resume on Mac), the pick banner and
+  Cancel, the chat header button, the new-session form.
+
+Edge cases:
+
+- A tap while a phone turn runs answers `waiting`; the tab opens when the
+  turn ends.
+- The first tap may need macOS to allow the bridge to control iTerm; the
+  alert shows osascript's message until then.
+
+Acceptance criteria:
+
+- 341 tests pass and `tsc` is clean. 1.8.0 installed 2026-11-05; 1.8.1
+  the same day reworked the New session screen into a top-aligned form
+  (the composer floated to mid-screen with the keyboard) and split the
+  list header into a toolbar row and a large title.
+
+### Ticket 28 - Face ID lock mode
+
+Objective:
+
+- A lock mode for using the phone outside: Face ID turns it on, and
+  while it is on the app covers itself every time it comes back to the
+  screen until Face ID (or the passcode) passes. Turning it off asks for
+  Face ID again.
+
+TDD work:
+
+- `expo-local-authentication` at the SDK 57 version (`npx expo install
+  --check`, then `scripts/ios_link_check.py`), `NSFaceIDUsageDescription`
+  in app.json, the lock state in a hook with the module mocked in tests.
+
+Edge cases:
+
+- No paid Apple account or entitlement is needed; it is a native module,
+  so it needs a rebuild.
+- It protects the screens, not the key built into the app.
+
+Acceptance criteria:
+
+- Ken asks for it first (2026-11-05: "no need to implement yet").
+
+### Ticket 29 - Talk to a running turn, queue actions
+
+Objective:
+
+- Two ways to send while Claude works, Now (into the running turn) and
+  After this turn (the queue), plus Stop and Send now, Delete, Edit for
+  queued messages (bridge ticket 26).
+
+TDD work:
+
+- `useChatSession`: "now" calls `/resume/inject` and shows the message
+  as sent; a refused inject falls back to the queue with a notice;
+  "after" always queues; `mergeSteers`; stop, send now, delete and undo,
+  edit; a failed action keeps its error after the re-sync (a catch-up
+  used to clear it at once).
+- `Composer`: the switch only while busy with something typed, Now off
+  with its reason, the clock icon for After, Stop while empty.
+- `QueueTray`: Send now, Delete, long-press Edit, Send all now from two,
+  the paused bar with Run queue, Undo, the sent-message states.
+
+Acceptance criteria:
+
+- 359 tests pass and `tsc` is clean. Installed as 1.9.0.
 
 ## Optional, not scheduled
 

@@ -140,3 +140,58 @@ it('shows the conversation button only when the screen wires it', async () => {
   await fireEvent.press(screen.getByTestId('composer-conversation'));
   expect(onConversationPress).toHaveBeenCalled();
 });
+
+
+describe('while Claude works (1.9.0)', () => {
+  const base = () => ({
+    draft: 'also skip android',
+    onChangeDraft: jest.fn(),
+    attachments: [],
+    files: [],
+    onPickImages: jest.fn(),
+    onPickFiles: jest.fn(),
+    onRemoveAttachment: jest.fn(),
+    onRemoveFile: jest.fn(),
+    canAttachImages: true,
+    canAttachFiles: true,
+    busy: true,
+    voiceStatus: 'idle' as const,
+    onMicPress: jest.fn(),
+    onSend: jest.fn(),
+    onModeChange: jest.fn(),
+    running: true,
+    onStop: jest.fn(),
+  });
+
+  it('shows the Now / After switch only with something typed', async () => {
+    const props = base();
+    const view = await render(<Composer {...props} mode="now" />);
+    expect(screen.getByTestId('composer-mode')).toBeOnTheScreen();
+    expect(screen.getByPlaceholderText('Add to what Claude is doing…')).toBeOnTheScreen();
+    await fireEvent.press(screen.getByTestId('composer-mode-after'));
+    expect(props.onModeChange).toHaveBeenCalledWith('after');
+    await view.rerender(<Composer {...props} draft="" mode="now" />);
+    expect(screen.queryByTestId('composer-mode')).toBeNull();
+  });
+
+  it('the after mode queues with a clock icon', async () => {
+    await render(<Composer {...base()} mode="after" />);
+    expect(screen.getByPlaceholderText('Queue for after this turn…')).toBeOnTheScreen();
+    expect(screen.getByLabelText('Queue for after this turn')).toBeOnTheScreen();
+  });
+
+  it('greys out Now with the reason when the turn cannot take it', async () => {
+    await render(<Composer {...base()} mode="now" nowAvailable={false} nowReason="Working in a Mac tab, so it waits in the queue." />);
+    expect(screen.getByTestId('composer-mode-now')).toBeDisabled();
+    expect(screen.getByTestId('composer-mode-reason')).toHaveTextContent(/Mac tab/);
+    expect(screen.getByPlaceholderText('Queue for after this turn…')).toBeOnTheScreen();
+  });
+
+  it('shows Stop instead of send while the input is empty', async () => {
+    const props = base();
+    await render(<Composer {...props} draft="" />);
+    await fireEvent.press(screen.getByTestId('composer-stop'));
+    expect(props.onStop).toHaveBeenCalled();
+    expect(screen.queryByTestId('composer-send')).toBeNull();
+  });
+});
