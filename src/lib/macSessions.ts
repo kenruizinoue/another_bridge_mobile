@@ -38,3 +38,10 @@ export function newSessionCard(
     terminal: null,
   };
 }
+
+// The word Ken types to confirm deleting a session (the second check).
+export const DELETE_WORD = 'DELETE';
+
+export function isDeleteConfirmed(typed: string | undefined | null): boolean {
+  return (typed ?? '').trim().toUpperCase() === DELETE_WORD;
+}

@@ -21,6 +21,7 @@ import type { SessionCard as Card } from '../api/types';
 import GlassIconButton from '../components/GlassIconButton';
 import SessionCard from '../components/SessionCard';
 import SettingsSheet from '../components/SettingsSheet';
+import useDeleteSession from '../hooks/useDeleteSession';
 import useOpenOnMac from '../hooks/useOpenOnMac';
 import { colors, font, mono, space } from '../theme';
 
@@ -31,10 +32,12 @@ export default function SessionListScreen({
   onOpen,
   onOpenFiles,
   onNew,
+  onOpenProcesses,
 }: {
   onOpen: (card: Card) => void;
   onOpenFiles?: () => void;
   onNew?: () => void;
+  onOpenProcesses?: () => void;
 }) {
   const [pickForMac, setPickForMac] = useState(false);
   const mac = useOpenOnMac();
@@ -52,6 +55,33 @@ export default function SessionListScreen({
       Alert.alert('Start', undefined, [
         { text: 'New session', onPress: () => choose(0) },
         { text: 'Resume on Mac', onPress: () => choose(1) },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    }
+  };
+  const removal = useDeleteSession((sessionId) =>
+    setSessions((list) => list.filter((c) => c.session_id !== sessionId)),
+  );
+  // Long-press a card: its actions. Delete asks twice (useDeleteSession).
+  const onCardLongPress = (card: Card) => {
+    const choose = (i: number) => {
+      if (i === 0) void mac.open(card.session_id, card.title);
+      else if (i === 1) removal.confirmDelete(card);
+    };
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: card.title,
+          options: ['Open on Mac', 'Delete session…', 'Cancel'],
+          destructiveButtonIndex: 1,
+          cancelButtonIndex: 2,
+        },
+        choose,
+      );
+    } else {
+      Alert.alert(card.title, undefined, [
+        { text: 'Open on Mac', onPress: () => choose(0) },
+        { text: 'Delete session…', style: 'destructive', onPress: () => choose(1) },
         { text: 'Cancel', style: 'cancel' },
       ]);
     }
@@ -114,6 +144,15 @@ export default function SessionListScreen({
         />
         <View style={styles.headerSpacer} />
         <Text style={styles.version}>v{Constants.expoConfig?.version ?? '?'}</Text>
+        {onOpenProcesses ? (
+          <GlassIconButton
+            name="pulse-outline"
+            onPress={onOpenProcesses}
+            size={36}
+            testID="open-processes"
+            label="What runs on the Mac"
+          />
+        ) : null}
         {onOpenFiles ? (
           <GlassIconButton name="folder-outline" onPress={onOpenFiles} size={36} testID="open-files" label="Files" />
         ) : null}
@@ -147,6 +186,12 @@ export default function SessionListScreen({
           >
             <Text style={styles.pickCancel}>Cancel</Text>
           </Pressable>
+        </View>
+      ) : null}
+      {removal.deleting ? (
+        <View style={styles.pickBanner} testID="session-deleting">
+          <ActivityIndicator color={colors.accent} />
+          <Text style={styles.pickText}>Deleting…</Text>
         </View>
       ) : null}
       {mac.opening ? (
@@ -192,7 +237,9 @@ export default function SessionListScreen({
           testID="session-list"
           data={sessions}
           keyExtractor={(item) => item.session_id}
-          renderItem={({ item }) => <SessionCard card={item} onPress={onCardPress} />}
+          renderItem={({ item }) => (
+            <SessionCard card={item} onPress={onCardPress} onLongPress={pickForMac ? undefined : onCardLongPress} />
+          )}
           contentContainerStyle={[styles.listContent, sessions.length === 0 && styles.grow]}
           alwaysBounceVertical
           refreshControl={refreshControl}

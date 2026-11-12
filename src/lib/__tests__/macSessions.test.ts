@@ -1,4 +1,4 @@
-import { describeOpenOnMac, newSessionCard } from '../macSessions';
+import { describeOpenOnMac, isDeleteConfirmed, newSessionCard } from '../macSessions';
 
 describe('describeOpenOnMac', () => {
   it('names the app that opened', () => {
@@ -44,5 +44,19 @@ describe('newSessionCard', () => {
     expect(card.cwd).toBe('/Users/ken');
     expect(card.last_activity).toBe(1_800_000_000);
     expect(card.session_id).toBe('abc');
+  });
+});
+
+describe('isDeleteConfirmed', () => {
+  it('accepts DELETE in any case, with spaces around it', () => {
+    expect(isDeleteConfirmed('DELETE')).toBe(true);
+    expect(isDeleteConfirmed(' delete ')).toBe(true);
+  });
+
+  it('refuses anything else', () => {
+    expect(isDeleteConfirmed('')).toBe(false);
+    expect(isDeleteConfirmed(undefined)).toBe(false);
+    expect(isDeleteConfirmed('yes')).toBe(false);
+    expect(isDeleteConfirmed('DELETE it')).toBe(false);
   });
 });

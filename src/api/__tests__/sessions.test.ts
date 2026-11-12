@@ -197,3 +197,14 @@ it('missing payload fields fall back to safe defaults', () => {
   expect(h.onTool).toHaveBeenCalledWith({ name: '', label: '', stat: null });
   expect(h.onError).toHaveBeenCalledWith('stream error');
 });
+
+describe('describeStop', () => {
+  const { describeStop } = jest.requireActual('../sessions');
+  it('says what a session stop did', () => {
+    expect(describeStop({ turn: 'phone', paused: false, commands_stopped: 0 })).toBe('Stopped the phone turn.');
+    expect(describeStop({ turn: 'none', paused: false, commands_stopped: 2 })).toBe(
+      'Claude was not working in this session. Ended 2 commands.',
+    );
+    expect(describeStop({ turn: 'unsupported', paused: false, commands_stopped: 0 })).toMatch(/isn't iTerm/);
+  });
+});

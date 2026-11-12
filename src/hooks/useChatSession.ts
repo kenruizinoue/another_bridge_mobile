@@ -18,6 +18,7 @@ import {
   runQueue as apiRunQueue,
   sendAllQueuedNow,
   sendQueuedNow,
+  stopSession,
   stopTurn,
   type HoldReason,
   type OutgoingFile,
@@ -41,13 +42,26 @@ const titlesOf = (s: ResumeStatus): string[] =>
 // How long "Deleted, Undo" stays up after deleting a queued message.
 export const UNDO_MS = 5000;
 
+// How long a message sent into the running turn keeps its "Claude got it"
+// row before it leaves the tray.
+export const STEER_READ_MS = 3000;
+
 // The bridge's view of the messages sent into the running turn wins, but a
-// message this phone is still sending (not on the bridge yet) stays. Once
-// no turn runs they are part of the transcript, so the list empties.
-export function mergeSteers(local: Steer[], server: ResumeStatus['steers'], running: boolean): Steer[] {
+// message this phone is still sending (not on the bridge yet) stays. Rows
+// Claude already read and that had their few seconds (`hidden`) stay gone.
+// Once no turn runs they are part of the transcript, so the list empties.
+export function mergeSteers(
+  local: Steer[],
+  server: ResumeStatus['steers'],
+  running: boolean,
+  hidden: ReadonlySet<string> = new Set(),
+): Steer[] {
   if (!running) return [];
-  const fromServer: Steer[] = (server ?? []).map((st) => ({ id: st.id, text: st.text, state: st.state }));
-  const known = new Set(fromServer.map((st) => st.id));
+  const all = server ?? [];
+  const known = new Set(all.map((st) => st.id));
+  const fromServer: Steer[] = all
+    .filter((st) => !hidden.has(st.id))
+    .map((st) => ({ id: st.id, text: st.text, state: st.state }));
   return [...fromServer, ...local.filter((st) => st.state === 'sending' && !known.has(st.id))];
 }
 
@@ -91,6 +105,9 @@ export default function useChatSession(sessionId: string) {
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
   const [canInject, setCanInject] = useState(false);
   const [steers, setSteers] = useState<Steer[]>([]);
+  // Read rows already shown for STEER_READ_MS, and their pending timers.
+  const hiddenSteers = useRef(new Set<string>());
+  const steerTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const [paused, setPaused] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [lastDeleted, setLastDeleted] = useState<QueueItem | null>(null);
@@ -123,7 +140,7 @@ export default function useChatSession(sessionId: string) {
     setTerminal(s.terminal ?? null);
     setCanInject(!!s.can_inject);
     setPaused(!!s.paused);
-    setSteers((local) => mergeSteers(local, s.steers, s.running));
+    setSteers((local) => mergeSteers(local, s.steers, s.running, hiddenSteers.current));
   }, []);
 
   const markSteer = useCallback((id: string, state: SteerState) => {
@@ -324,6 +341,22 @@ export default function useChatSession(sessionId: string) {
   );
   catchUpRef.current = catchUp;
 
+  // "Claude got it" shows for a few seconds, then the row leaves the tray.
+  useEffect(() => {
+    for (const st of steers) {
+      if (st.state !== 'read' || hiddenSteers.current.has(st.id) || steerTimers.current.has(st.id)) continue;
+      const id = st.id;
+      steerTimers.current.set(
+        id,
+        setTimeout(() => {
+          steerTimers.current.delete(id);
+          hiddenSteers.current.add(id);
+          if (mounted.current) setSteers((list) => list.filter((x) => x.id !== id));
+        }, STEER_READ_MS),
+      );
+    }
+  }, [steers]);
+
   // Back from the background: iOS froze the app, so a text send's stream
   // or the attach may be dead without saying so. Re-sync and attach fresh.
   // A voice send keeps its stream (it carries the spoken summary); the
@@ -346,6 +379,8 @@ export default function useChatSession(sessionId: string) {
       mounted.current = false;
       stopPolling();
       stopAttach();
+      steerTimers.current.forEach(clearTimeout);
+      steerTimers.current.clear();
       sendToken.current += 1;
       sendCancel.current?.();
       sendCancel.current = null;
@@ -548,7 +583,15 @@ export default function useChatSession(sessionId: string) {
 
   // Stop the running turn, like Esc in the terminal. Queued messages wait
   // until runQueue, so they can be fixed first.
-  const stop = useCallback(() => act(() => stopTurn(sessionId)), [act, sessionId]);
+  // A phone turn is interrupted directly; a session working in a Mac tab
+  // gets Esc in that tab (1.12.0).
+  const stop = useCallback(
+    () =>
+      act<unknown>(() =>
+        sending || live || canInject || !terminal?.active ? stopTurn(sessionId) : stopSession(sessionId),
+      ),
+    [act, sessionId, sending, live, canInject, terminal],
+  );
   const resumeQueue = useCallback(() => act(() => apiRunQueue(sessionId)), [act, sessionId]);
 
   const noteSent = useCallback((item: QueueItem | undefined, status: string) => {

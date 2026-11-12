@@ -1,10 +1,10 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { ActionSheetIOS, Alert, AppState } from 'react-native';
 import SessionListScreen from '../SessionListScreen';
-import { fetchSessions, openOnMac } from '../../api/sessions';
+import { deleteSession, fetchSessions, openOnMac } from '../../api/sessions';
 import type { SessionCard } from '../../api/types';
 
-jest.mock('../../api/sessions', () => ({ fetchSessions: jest.fn(), openOnMac: jest.fn() }));
+jest.mock('../../api/sessions', () => ({ fetchSessions: jest.fn(), openOnMac: jest.fn(), deleteSession: jest.fn() }));
 jest.mock('react-native-safe-area-context', () =>
   require('react-native-safe-area-context/jest/mock').default,
 );
@@ -169,4 +169,53 @@ it('cancelling resume on Mac goes back to opening chats', async () => {
   await fireEvent.press(screen.getByTestId('session-card-a'));
   expect(onOpen).toHaveBeenCalled();
   sheet.mockRestore();
+});
+
+// ── Delete: long-press, then two checks ───────────────────────────────
+
+function pressButton(buttons: any[] | undefined, text: string, value?: string) {
+  const b = (buttons ?? []).find((x: any) => x.text === text);
+  b?.onPress?.(value);
+}
+
+async function longPressDelete(typed: string) {
+  const deleteMock = deleteSession as jest.MockedFunction<typeof deleteSession>;
+  deleteMock.mockResolvedValue({ ok: true, trash: '/trash/x' });
+  fetchSessionsMock.mockResolvedValue([card('a', 'Fix the composer'), card('b', 'Keep me')]);
+  const sheet = jest.spyOn(ActionSheetIOS, 'showActionSheetWithOptions').mockImplementation((opts, cb) => {
+    expect(opts.options).toEqual(['Open on Mac', 'Delete session…', 'Cancel']);
+    expect(opts.destructiveButtonIndex).toBe(1);
+    cb(1);
+  });
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation((title, _msg, buttons) => {
+    if (String(title).startsWith('Delete')) pressButton(buttons as any[], 'Delete…');
+  });
+  const prompt = jest.spyOn(Alert, 'prompt').mockImplementation((_t, _m, buttons) => {
+    pressButton(buttons as any[], 'Delete', typed);
+  });
+  await render(<SessionListScreen onOpen={jest.fn()} onNew={jest.fn()} />);
+  await fireEvent(await screen.findByTestId('session-card-a'), 'longPress');
+  return { deleteMock, sheet, alert, prompt };
+}
+
+it('deletes a session only after the warning and typing DELETE', async () => {
+  const { deleteMock, sheet, alert, prompt } = await longPressDelete('delete ');
+  await waitFor(() => expect(deleteMock).toHaveBeenCalledWith('a'));
+  await waitFor(() => expect(screen.queryByText('Fix the composer')).toBeNull());
+  expect(screen.getByText('Keep me')).toBeOnTheScreen();
+  expect(alert).toHaveBeenCalledWith(expect.stringContaining('Fix the composer'), expect.any(String), expect.any(Array));
+  expect(prompt).toHaveBeenCalled();
+  sheet.mockRestore();
+  alert.mockRestore();
+  prompt.mockRestore();
+});
+
+it('does not delete when the typed word is wrong', async () => {
+  const { deleteMock, sheet, alert, prompt } = await longPressDelete('yes');
+  expect(deleteMock).not.toHaveBeenCalled();
+  expect(alert).toHaveBeenCalledWith('Not deleted', expect.stringContaining('DELETE'));
+  expect(screen.getByText('Fix the composer')).toBeOnTheScreen();
+  sheet.mockRestore();
+  alert.mockRestore();
+  prompt.mockRestore();
 });

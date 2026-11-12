@@ -4,18 +4,24 @@ import { relativeTime } from '../lib/time';
 import { colors, font, mono, space } from '../theme';
 import { terminalLabel } from './ChatStatusBar';
 
-// One conversation card. Tapping opens the conversation view.
+// One conversation card. Tapping opens the conversation view; a
+// long-press opens its actions (Open on Mac, Delete).
 export default function SessionCard({
   card,
   onPress,
+  onLongPress,
 }: {
   card: Card;
   onPress?: (card: Card) => void;
+  onLongPress?: (card: Card) => void;
 }) {
   return (
     <Pressable
       testID={`session-card-${card.session_id}`}
       onPress={() => onPress?.(card)}
+      onLongPress={onLongPress ? () => onLongPress(card) : undefined}
+      delayLongPress={400}
+      accessibilityHint={onLongPress ? 'Long-press for Open on Mac and Delete' : undefined}
       style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
     >
       <Text style={styles.title} numberOfLines={2}>

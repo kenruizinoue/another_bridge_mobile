@@ -346,7 +346,7 @@ export default function ChatScreen({
             onModeChange={setMode}
             nowAvailable={turnRunning && !chat.terminal?.active}
             nowReason={nowReason}
-            running={turnRunning}
+            running={turnRunning || !!chat.terminal?.active}
             onStop={() => void chat.stop()}
             voiceStatus={voice.status}
             onMicPress={() => {

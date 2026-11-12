@@ -1,7 +1,7 @@
 // 1.9.0: sending into the running turn ("now"), Stop, and the queued
 // message actions, with the API module mocked at the seam.
 import { act, renderHook, waitFor } from '@testing-library/react-native';
-import useChatSession, { mergeSteers } from '../useChatSession';
+import useChatSession, { mergeSteers, STEER_READ_MS } from '../useChatSession';
 import * as api from '../../api/sessions';
 import type { MessagesPage } from '../../api/types';
 
@@ -14,6 +14,7 @@ jest.mock('../../api/sessions', () => ({
   resumeStatus: jest.fn(),
   injectMessage: jest.fn(),
   stopTurn: jest.fn(),
+  stopSession: jest.fn(),
   runQueue: jest.fn(),
   sendQueuedNow: jest.fn(),
   sendAllQueuedNow: jest.fn(),
@@ -62,6 +63,38 @@ describe('mergeSteers', () => {
   it('empties once no turn runs (they are in the transcript)', () => {
     expect(mergeSteers([{ id: 'a', text: 'x', state: 'sent' }], [], false)).toEqual([]);
   });
+
+  it('drops read rows that already had their seconds', () => {
+    const server = [
+      { id: 'a', text: 'one', state: 'read' as const },
+      { id: 'b', text: 'two', state: 'sent' as const },
+    ];
+    const local = [{ id: 'a', text: 'one', state: 'sending' as const }];
+    expect(mergeSteers(local, server, true, new Set(['a']))).toEqual([{ id: 'b', text: 'two', state: 'sent' }]);
+  });
+});
+
+it('"Claude got it" leaves the tray after a few seconds', async () => {
+  jest.useFakeTimers();
+  try {
+    const steers = [
+      { id: 's1', text: 'pon 2 figuras', state: 'read' as const },
+      { id: 's2', text: 'meses sin intereses', state: 'sent' as const },
+    ];
+    const { result, unmount } = await openRunning({ steers });
+    await waitFor(() => expect(result.current.steers).toHaveLength(2));
+    await act(async () => {
+      jest.advanceTimersByTime(STEER_READ_MS - 100);
+    });
+    expect(result.current.steers.map((st) => st.id)).toEqual(['s1', 's2']);
+    await act(async () => {
+      jest.advanceTimersByTime(200);
+    });
+    expect(result.current.steers).toEqual([{ id: 's2', text: 'meses sin intereses', state: 'sent' }]);
+    await unmount();
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 it('"now" sends into the running turn and shows it as sent', async () => {
@@ -145,5 +178,23 @@ it('shows a bridge error from a queue action', async () => {
     await result.current.sendNow('gone');
   });
   expect(result.current.sendError).toBe('that message is not in the queue any more');
+  await unmount();
+});
+
+it('stop presses Esc in the Mac tab when the session works there', async () => {
+  m.resumeStatus.mockResolvedValue({
+    ...running,
+    running: false,
+    can_inject: false,
+    terminal: { open: true, busy: true, active: true, agents: 0 },
+  });
+  const { result, unmount } = await renderHook(() => useChatSession('sid'));
+  await waitFor(() => expect(result.current.terminal?.active).toBe(true));
+  m.stopSession.mockResolvedValue({ turn: 'mac_tab', paused: false, commands_stopped: 0 });
+  await act(async () => {
+    await result.current.stop();
+  });
+  expect(m.stopSession).toHaveBeenCalledWith('sid');
+  expect(m.stopTurn).not.toHaveBeenCalled();
   await unmount();
 });

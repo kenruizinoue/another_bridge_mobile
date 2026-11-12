@@ -1,4 +1,20 @@
-# another_bridge_mobile: security, UI and quality pass (v1.4.0)
+# another_bridge_mobile: project plan
+
+## Next up (order agreed with Ken, 2026-11-08)
+
+1. Ticket 33: the bridge over Tailscale (with bridge ticket 31). Starts
+   when Ken has Tailscale on the Mac and the iPhone.
+2. Keys out of the app: ticket 3 (Connect screen, key in the Keychain) and
+   ticket 4 (OpenAI through the bridge, bridge ticket 14). Checked
+   2026-11-07: the built app holds both the phone key and the OpenAI key
+   as plain text.
+3. Ticket 28: Face ID lock.
+4. The rest of the security, UI and code health tickets.
+5. Later: a private web chat served by the bridge could replace this app
+   (bridge `docs/ANOTHERTASK_LINK_IDEA.txt`, phase D).
+
+The sections below started as the v1.4.0 security, UI and quality pass
+(2026-10-23) and grew with every phase since.
 
 ## Goal
 
@@ -19,6 +35,7 @@ the bundle. After this pass:
 ## Decisions (confirmed by Ken, 2026-10-23)
 
 1. Keep ngrok for now. Tailscale is optional, for later.
+   (Replaced by decision 12 on 2026-11-07.)
 2. Connect screen, key and URL in the Keychain, then the key is rotated.
 3. The phone gets its own key, separate from AnotherAgent's (server side).
 4. AnotherAgent routes off by default (server side).
@@ -41,6 +58,11 @@ the bundle. After this pass:
     after asking a thing ... audit how the mac syncing is ... to improve
     this experience"). Coming back to a running turn shows it streaming
     live instead of "reconnecting" with 30 s polls.
+
+12. Tailscale instead of ngrok (Ken, 2026-11-07): the app talks to the
+    bridge at its private ts.net address (ticket 33).
+13. Face ID lock design (Ken, 2026-11-08: "each time i open the app it asks
+    for my face id (possible to turn off from config)"): see ticket 28.
 
 ## Contract with the bridge (v0.4.0)
 
@@ -102,6 +124,10 @@ the bundle. After this pass:
 | 27 | New session from the phone, Open on Mac | Done (2026-11-05) |
 | 28 | Face ID lock mode | Todo |
 | 29 | Talk to a running turn, queue actions | Done (2026-11-05) |
+| 30 | Delete a session, long-press actions | Done (2026-11-05) |
+| 31 | What runs on the Mac | Done (2026-11-05) |
+| 32 | Stop a session wherever it runs | Done (2026-11-05) |
+| 33 | Bridge over Tailscale | Todo |
 
 ## Phase 1: no secrets, safe by default
 
@@ -741,26 +767,32 @@ Acceptance criteria:
 
 Objective:
 
-- A lock mode for using the phone outside: Face ID turns it on, and
-  while it is on the app covers itself every time it comes back to the
-  screen until Face ID (or the passcode) passes. Turning it off asks for
-  Face ID again.
+- Design agreed with Ken on 2026-11-08: the app asks for Face ID when it
+  opens, and again when it comes back after 5 minutes or more away (a
+  quick app switch doesn't ask). The iPhone passcode is the fallback.
+- On by default, with a switch in Settings. Turning it off asks for Face
+  ID first, so someone holding the unlocked phone can't switch it off.
+- The app switcher shows a blank screen instead of the chats.
 
 TDD work:
 
 - `expo-local-authentication` at the SDK 57 version (`npx expo install
   --check`, then `scripts/ios_link_check.py`), `NSFaceIDUsageDescription`
-  in app.json, the lock state in a hook with the module mocked in tests.
+  in app.json, the lock state in a hook with the module mocked in tests:
+  locked at launch, unlocked after success, locked again after 5 minutes
+  in the background, not after 1 minute, the switch needs Face ID to go
+  off, a failed or cancelled check stays locked.
 
 Edge cases:
 
 - No paid Apple account or entitlement is needed; it is a native module,
-  so it needs a rebuild.
-- It protects the screens, not the key built into the app.
+  so it needs a rebuild and a new version.
+- It protects the screens, not the key built into the app (ticket 3 does).
+- A phone without Face ID or passcode set up: show why and stay usable.
 
 Acceptance criteria:
 
-- Ken asks for it first (2026-11-05: "no need to implement yet").
+- Order: after ticket 33 and tickets 3 and 4 (see "Next up").
 
 ### Ticket 29 - Talk to a running turn, queue actions
 
@@ -786,9 +818,83 @@ Acceptance criteria:
 
 - 359 tests pass and `tsc` is clean. Installed as 1.9.0.
 
+### Ticket 30 - Delete a session, long-press actions
+
+Objective:
+
+- Long-press a card for Open on Mac and Delete session (bridge ticket
+  28), with two checks before anything is deleted.
+
+TDD work:
+
+- `isDeleteConfirmed`: DELETE in any case, trimmed; nothing else.
+- The list: long-press shows the actions with Delete as destructive;
+  the warning, then typing DELETE, calls the bridge and removes the
+  card; a wrong word deletes nothing and says so.
+
+Acceptance criteria:
+
+- 363 tests pass and `tsc` is clean. Installed as 1.10.0.
+
+### Ticket 31 - What runs on the Mac
+
+Objective:
+
+- A full-screen "On the Mac" view from the list toolbar with the running
+  Bash commands per session (Stop asks first) and every open Claude
+  process (bridge ticket 29).
+
+TDD work:
+
+- `formatDuration`; the screen lists commands with their meta and the
+  Claude processes, says when nothing runs, stops only after the
+  confirmation, and refreshes every 3 s while open.
+
+Acceptance criteria:
+
+- 368 tests pass and `tsc` is clean. Installed as 1.11.0.
+
+### Ticket 32 - Stop a session wherever it runs
+
+Objective:
+
+- A Stop per working session in "On the Mac" (its turn, or its turn and
+  all its commands), and the chat's Stop for a session working in a Mac
+  tab (bridge ticket 30).
+
+TDD work:
+
+- The view's Stop offers both choices and reports what stopped
+  (`describeStop`); a working session without commands still shows;
+  the chat hook calls the session stop when a Mac tab works and the
+  phone turn stop otherwise.
+
+Acceptance criteria:
+
+- 372 tests pass and `tsc` is clean. Installed as 1.12.0.
+
+### Ticket 33 - Bridge over Tailscale
+
+Status: Todo (created 2026-11-07).
+
+Objective:
+
+- The app reaches the bridge at its tailnet address (bridge ticket 31),
+  so only Ken's own devices can talk to the Mac.
+
+Work:
+
+- `EXPO_PUBLIC_BRIDGE_URL` in `.env.local` becomes
+  `https://<mac>.<tailnet>.ts.net`.
+- The Connect help and the offline message say Tailscale must be on.
+
+Acceptance criteria:
+
+- Works on cellular with Tailscale on, shows offline with it off.
+- Installed with a new minor version.
+
 ## Optional, not scheduled
 
-- Tailscale setup in the Connect screen help.
 - QR code pairing from the Mac.
 - New E2E flows, only after Ken approves.
 

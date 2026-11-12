@@ -4,6 +4,49 @@ All notable changes to this project are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.12.1] - 2026-11-07
+
+### Changed
+
+- A message sent into the running turn shows "Claude got it" for 3
+  seconds, then leaves the tray. Before, every row stayed until the turn
+  ended.
+
+## [1.12.0] - 2026-11-05
+
+### Added
+
+- Stop a session wherever it runs. In "On the Mac", each working session
+  has a Stop button: Stop Claude's turn, or Stop the turn and all its
+  commands. A phone turn is interrupted; a session working in a Mac tab
+  gets Esc pressed in its iTerm tab, the key that stops Claude at the
+  keyboard. The chat's Stop button now also shows, and works, while the
+  session is working in a Mac tab.
+- Needs another_bridge ticket 30.
+
+## [1.11.0] - 2026-11-05
+
+### Added
+
+- "On the Mac" (the pulse button on the list): every Bash command Claude
+  is running right now, grouped by session, with its running time, CPU
+  and how many processes it started, and a Stop button that asks first.
+  Below, every Claude process that is open, Mac tab or phone turn,
+  working or idle. Refreshes every 3 seconds; keys and passwords in
+  commands are hidden by the bridge.
+- Needs another_bridge ticket 29.
+
+## [1.10.0] - 2026-11-05
+
+### Added
+
+- Long-press a conversation for its actions: Open on Mac, and Delete
+  session. Delete asks twice: a warning with a red Delete button, then
+  typing DELETE. The bridge moves the session to its trash folder, so it
+  can still be recovered on the Mac. It refuses while a turn runs, while
+  messages wait, or while a Mac tab has the session open.
+- Needs another_bridge ticket 28.
+
 ## [1.9.0] - 2026-11-05
 
 ### Added

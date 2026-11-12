@@ -287,3 +287,37 @@ export async function restoreQueued(sessionId: string, itemId: string): Promise<
 export async function editQueued(sessionId: string, itemId: string, message: string): Promise<{ id: string }> {
   return apiSend(`/sessions/${sessionId}/resume/queue/${itemId}`, 'PATCH', { message });
 }
+
+// Delete a conversation (1.10.0). The id goes twice, as a second check;
+// the bridge moves it to its trash folder instead of erasing it, and
+// refuses while a turn runs or a Mac tab holds the session.
+export async function deleteSession(sessionId: string): Promise<{ ok: boolean; trash: string }> {
+  return apiSend(`/sessions/${sessionId}`, 'DELETE', { confirm: sessionId });
+}
+
+// What a session-wide Stop stopped (1.12.0): a phone turn, Esc in the
+// working Mac tab, nothing, or a working tab that isn't in iTerm.
+export type StopSessionResult = {
+  turn: 'phone' | 'mac_tab' | 'none' | 'unsupported';
+  paused: boolean;
+  commands_stopped: number;
+};
+
+// Stop what a session is doing, wherever it runs. With `commands`, also
+// every Bash command its Claude runs (background servers too).
+export async function stopSession(sessionId: string, commands = false): Promise<StopSessionResult> {
+  return apiPost(`/sessions/${sessionId}/stop`, { confirm: sessionId, commands });
+}
+
+export function describeStop(r: StopSessionResult): string {
+  const turn =
+    r.turn === 'phone'
+      ? 'Stopped the phone turn.'
+      : r.turn === 'mac_tab'
+        ? 'Pressed Esc in its Mac tab, so Claude stops there.'
+        : r.turn === 'unsupported'
+          ? "It is working in a Mac window that isn't iTerm, so it can't be stopped from here."
+          : 'Claude was not working in this session.';
+  const cmds = r.commands_stopped > 0 ? ` Ended ${r.commands_stopped} command${r.commands_stopped === 1 ? '' : 's'}.` : '';
+  return turn + cmds;
+}
